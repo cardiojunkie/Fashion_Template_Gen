@@ -4,8 +4,10 @@ import re
 import stat
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
+from typing import Protocol
 from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -25,6 +27,24 @@ MAX_TOTAL_UPLOAD_BYTES = 250 * 1024 * 1024
 MAX_FILENAME_CHARACTERS = 1_024
 MAX_VALIDATION_ISSUES = 200
 IGNORED_NAMES = {"__macosx", ".ds_store", "thumbs.db", "desktop.ini"}
+
+
+@dataclass(frozen=True)
+class StandardizedImage:
+    content: bytes
+    source_dimensions: tuple[int, int]
+    output_dimensions: tuple[int, int]
+    low_resolution: bool
+
+
+class BackgroundRemovalAdapter(Protocol):
+    def remove_background(self, content: bytes) -> bytes: ...
+
+
+class _ImageDecodeError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _issue(
@@ -311,41 +331,39 @@ def _expand_uploads(
     return files
 
 
-def _decode_image(
-    source_name: str, filename: str, sku: str, ordinal: int, content: bytes
-) -> tuple[UploadedImage | None, ValidationIssue | None]:
-    suffix = PurePosixPath(filename).suffix.casefold()
-    expected_format = SUPPORTED_SUFFIXES[suffix]
+def _open_validated_image(
+    content: bytes,
+    *,
+    max_pixels: int,
+    expected_format: str | None = None,
+) -> tuple[Image.Image, str]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(content)) as probe:
                 if probe.format not in set(SUPPORTED_SUFFIXES.values()):
-                    return None, _issue(
-                        Severity.CRITICAL,
+                    raise _ImageDecodeError(
                         "UNSUPPORTED_IMAGE_CONTENT",
                         "File content is not JPEG, PNG, or WEBP.",
-                        source_name,
                     )
-                if probe.format != expected_format:
-                    return None, _issue(
-                        Severity.CRITICAL,
+                image_format = probe.format
+                if expected_format is not None and image_format != expected_format:
+                    raise _ImageDecodeError(
                         "IMAGE_FORMAT_MISMATCH",
-                        f"Extension expects {expected_format}, but content is {probe.format}.",
-                        source_name,
+                        f"Extension expects {expected_format}, but content is {image_format}.",
                     )
-                if probe.width * probe.height > MAX_IMAGE_PIXELS:
-                    return None, _issue(
-                        Severity.CRITICAL,
+                if probe.width * probe.height > max_pixels:
+                    raise _ImageDecodeError(
                         "IMAGE_TOO_MANY_PIXELS",
-                        f"Image exceeds {MAX_IMAGE_PIXELS:,} decoded pixels.",
-                        source_name,
+                        f"Image exceeds {max_pixels:,} decoded pixels.",
                     )
                 probe.verify()
             with Image.open(BytesIO(content)) as image:
-                oriented = ImageOps.exif_transpose(image)
-                oriented.load()
-                width, height = oriented.size
+                with ImageOps.exif_transpose(image) as oriented:
+                    oriented.load()
+                    return oriented.copy(), image_format
+    except _ImageDecodeError:
+        raise
     except (
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
@@ -354,12 +372,25 @@ def _decode_image(
         SyntaxError,
         ValueError,
     ) as exc:
-        return None, _issue(
-            Severity.CRITICAL,
-            "UNREADABLE_IMAGE",
-            f"Cannot decode image: {exc}",
-            source_name,
+        raise _ImageDecodeError("UNREADABLE_IMAGE", "Cannot decode image data.") from exc
+
+
+def _decode_image(
+    source_name: str, filename: str, sku: str, ordinal: int, content: bytes
+) -> tuple[UploadedImage | None, ValidationIssue | None]:
+    suffix = PurePosixPath(filename).suffix.casefold()
+    expected_format = SUPPORTED_SUFFIXES[suffix]
+    try:
+        oriented, _ = _open_validated_image(
+            content,
+            max_pixels=MAX_IMAGE_PIXELS,
+            expected_format=expected_format,
         )
+    except _ImageDecodeError as exc:
+        return None, _issue(Severity.CRITICAL, exc.code, str(exc), source_name)
+
+    with oriented:
+        width, height = oriented.size
 
     return (
         UploadedImage(
@@ -474,7 +505,91 @@ def parse_uploaded_images(
 
 
 def open_oriented_image(content: bytes) -> Image.Image:
-    with Image.open(BytesIO(content)) as image:
-        oriented = ImageOps.exif_transpose(image)
-        oriented.load()
-        return oriented.copy()
+    image, _ = _open_validated_image(content, max_pixels=MAX_IMAGE_PIXELS)
+    return image
+
+
+def _positive_dimensions(name: str, dimensions: tuple[int, int]) -> tuple[int, int]:
+    if (
+        not isinstance(dimensions, tuple)
+        or len(dimensions) != 2
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in dimensions
+        )
+    ):
+        raise ValueError(f"{name} must contain two positive integers.")
+    return dimensions
+
+
+def standardize_pad_white(
+    content: bytes,
+    *,
+    content_box: tuple[int, int] = (1400, 1400),
+    canvas_size: tuple[int, int] = (1500, 1500),
+    upscale: bool = False,
+    quality: int = 95,
+    max_pixels: int | None = None,
+) -> StandardizedImage:
+    """Orient and fit a supported image onto a centered white RGB JPEG canvas."""
+    if not isinstance(content, bytes):
+        raise ValueError("Image content must be bytes.")
+    box_width, box_height = _positive_dimensions("content_box", content_box)
+    canvas_width, canvas_height = _positive_dimensions("canvas_size", canvas_size)
+    if box_width > canvas_width or box_height > canvas_height:
+        raise ValueError("content_box must fit inside canvas_size.")
+    if canvas_width * canvas_height > MAX_IMAGE_PIXELS:
+        raise ValueError(f"Canvas exceeds {MAX_IMAGE_PIXELS:,} pixels.")
+    if not isinstance(upscale, bool):
+        raise ValueError("upscale must be true or false.")
+    if not isinstance(quality, int) or isinstance(quality, bool) or not 1 <= quality <= 100:
+        raise ValueError("quality must be an integer from 1 to 100.")
+    pixel_limit = MAX_IMAGE_PIXELS if max_pixels is None else max_pixels
+    if not isinstance(pixel_limit, int) or isinstance(pixel_limit, bool) or pixel_limit <= 0:
+        raise ValueError("max_pixels must be a positive integer.")
+
+    try:
+        source, _ = _open_validated_image(content, max_pixels=pixel_limit)
+    except _ImageDecodeError as exc:
+        raise ValueError(str(exc)) from exc
+
+    with source:
+        source_dimensions = source.size
+        low_resolution = (
+            min(
+                box_width / source.width,
+                box_height / source.height,
+            )
+            > 1
+        )
+        if "A" in source.getbands() or "transparency" in source.info:
+            with source.convert("RGBA") as rgba:
+                converted = Image.new("RGB", source.size, "white")
+                with rgba.getchannel("A") as alpha:
+                    converted.paste(rgba, mask=alpha)
+        else:
+            converted = source.convert("RGB")
+
+    with converted:
+        if upscale or converted.width > box_width or converted.height > box_height:
+            placed = ImageOps.contain(
+                converted,
+                (box_width, box_height),
+                method=Image.Resampling.LANCZOS,
+            )
+        else:
+            placed = converted.copy()
+
+    with placed, Image.new("RGB", (canvas_width, canvas_height), "white") as canvas:
+        canvas.paste(
+            placed,
+            ((canvas_width - placed.width) // 2, (canvas_height - placed.height) // 2),
+        )
+        output = BytesIO()
+        canvas.save(output, format="JPEG", quality=quality, optimize=True)
+        return StandardizedImage(
+            content=output.getvalue(),
+            source_dimensions=source_dimensions,
+            output_dimensions=canvas.size,
+            low_resolution=low_resolution,
+        )

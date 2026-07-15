@@ -8,3 +8,12 @@
 - Ambiguous, unsafe, malformed, unreadable, mislabeled, or over-limit input is critical. Blank optional workbook values, duplicate EANs, missing/orphan images, unsupported extensions, and malformed image names are warnings and may continue.
 
 These defaults satisfy the untrusted-input and data-loss boundaries in the product contract without adding storage, archive, or legacy Excel dependencies.
+
+## 2026-07-15 — Phase 3 network and output boundaries
+
+- URL workbooks reuse the Phase 2 `.xlsx` preflight and are capped at 500 URLs. SKU text is never sanitized into a different identifier; values that cannot form a safe flat filename are blocked for correction.
+- Downloads use declared `httpx` with environment proxies disabled. Every HTTP/HTTPS destination and redirect must resolve only to public IPs, and the connection is pinned to a validated address while preserving the original Host header and TLS SNI. Non-public, metadata, multicast, transition, and mismatched peer addresses are rejected.
+- Secure defaults are configurable through the `FASHION_CMS_IMAGE_*` environment variables documented in `.env.example`; absolute validation ceilings remain in code. Decoding is serialized to cap worst-case 50-megapixel memory use, and retained processed output is capped at 500 MB.
+- Successful outputs remain in memory. The image ZIP is flat, image-only, and byte-deterministic; the separate report is `.xlsx` with all untrusted strings forced to safe literal text.
+- Failed-URL retry is session-only and keyed by SKU, physical ordinal, and source URL, so successes are reused without introducing Phase 4 persistence or cache infrastructure.
+- `REMOVE_AND_WHITE` is a replaceable protocol only. `PAD_WHITE` remains the required dependency-free path.

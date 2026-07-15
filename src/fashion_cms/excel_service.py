@@ -51,7 +51,7 @@ def _issue(
     return ValidationIssue(severity=severity, code=code, message=message, location=location)
 
 
-def _preflight_xlsx(content: bytes) -> ValidationIssue | None:
+def preflight_xlsx(content: bytes) -> ValidationIssue | None:
     try:
         with ZipFile(BytesIO(content)) as archive:
             members = archive.infolist()
@@ -142,7 +142,7 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
                 ),
             )
         )
-    if preflight_issue := _preflight_xlsx(content):
+    if preflight_issue := preflight_xlsx(content):
         return WorkbookResult(issues=(preflight_issue,))
 
     try:

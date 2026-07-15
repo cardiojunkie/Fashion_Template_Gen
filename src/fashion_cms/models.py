@@ -113,3 +113,89 @@ class ImageResult(BaseModel):
     @property
     def ready(self) -> bool:
         return not any(issue.severity == Severity.CRITICAL for issue in self.issues)
+
+
+class ImageUrlRequest(BaseModel):
+    schema_version: ClassVar[str] = "1"
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    row_number: int = Field(ge=2)
+    sku: str = Field(min_length=1, max_length=MAX_EXCEL_CELL_CHARACTERS)
+    ordinal: int = Field(gt=0)
+    source_url: str = Field(min_length=1, max_length=MAX_EXCEL_CELL_CHARACTERS)
+
+    @property
+    def key(self) -> tuple[str, int, str]:
+        return self.sku, self.ordinal, self.source_url
+
+    @property
+    def output_filename(self) -> str:
+        return f"{self.sku}-{self.ordinal}.jpg"
+
+
+class UrlWorkbookResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    requests: tuple[ImageUrlRequest, ...] = ()
+    issues: tuple[ValidationIssue, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.requests) and not any(
+            issue.severity == Severity.CRITICAL for issue in self.issues
+        )
+
+
+class DownloadResult(StrEnum):
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+class DownloadedImage(BaseModel):
+    schema_version: ClassVar[str] = "1"
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    sku: str
+    ordinal: int = Field(gt=0)
+    source_url: str
+    output_filename: str
+    source_width: int = Field(gt=0)
+    source_height: int = Field(gt=0)
+    output_width: int = Field(gt=0)
+    output_height: int = Field(gt=0)
+    low_resolution: bool = False
+    content: bytes = Field(repr=False)
+
+    @property
+    def key(self) -> tuple[str, int, str]:
+        return self.sku, self.ordinal, self.source_url
+
+
+class DownloadReportRow(BaseModel):
+    schema_version: ClassVar[str] = "1"
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    sku: str
+    ordinal: int = Field(gt=0)
+    source_url: str
+    result: DownloadResult
+    http_status: int | None = None
+    output_filename: str | None = None
+    source_dimensions: tuple[int, int] | None = None
+    output_dimensions: tuple[int, int] | None = None
+    error_message: str | None = None
+
+    @property
+    def key(self) -> tuple[str, int, str]:
+        return self.sku, self.ordinal, self.source_url
+
+
+class ImageDownloadResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    images: tuple[DownloadedImage, ...] = ()
+    report: tuple[DownloadReportRow, ...] = ()
+
+    @property
+    def failed(self) -> tuple[DownloadReportRow, ...]:
+        return tuple(row for row in self.report if row.result == DownloadResult.FAILED)

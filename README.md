@@ -2,7 +2,9 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 2 provides local `.xlsx` parsing, uploaded image/ZIP validation, and exact blank CMS workbook export. It intentionally contains no downloader, image standardizer, job, LLM, or catalog-generation pipeline.
+Phase 3 provides local workbook/image validation, exact blank CMS workbook export, and an
+SSRF-safe image downloader that creates standardized 1500 × 1500 JPEGs, a flat image ZIP,
+and a separate report. It intentionally contains no job, LLM, or catalog-generation pipeline.
 
 ## Requirements
 
@@ -23,6 +25,12 @@ streamlit run app.py
 ```
 
 Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`. Store SKU, base code, and EAN cells as text. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
+
+The Image Downloader page accepts a separate `.xlsx` workbook with text SKU values in
+column A and image URLs in columns B onward. URL ordinals come from physical column position,
+so a URL in column C is always saved as `SKU-2.jpg`, even when column B is blank or fails.
+Only HTTP/HTTPS URLs resolving to public destinations are fetched. Successful images are
+EXIF-oriented, fitted without default crop/stretch/upscale, and centered on a white canvas.
 
 ## Verify
 

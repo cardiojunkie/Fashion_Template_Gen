@@ -5,7 +5,11 @@ import pytest
 from PIL import Image
 
 from fashion_cms import image_service
-from fashion_cms.image_service import open_oriented_image, parse_uploaded_images
+from fashion_cms.image_service import (
+    open_oriented_image,
+    parse_uploaded_images,
+    standardize_pad_white,
+)
 
 
 def image_bytes(image_format: str = "PNG", size: tuple[int, int] = (12, 8), orientation=0) -> bytes:
@@ -168,3 +172,93 @@ def test_validation_report_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not result.ready
     assert len(result.issues) == 3
     assert result.issues[-1].code == "ADDITIONAL_IMAGE_ERRORS"
+
+
+def test_pad_white_composites_transparent_png_onto_white() -> None:
+    image = Image.new("RGBA", (200, 100), (255, 0, 0, 0))
+    image.paste((0, 0, 255, 255), (0, 0, 100, 100))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    image.close()
+
+    result = standardize_pad_white(output.getvalue())
+
+    assert result.source_dimensions == (200, 100)
+    assert result.output_dimensions == (1500, 1500)
+    assert result.low_resolution
+    with Image.open(BytesIO(result.content)) as standardized:
+        assert standardized.format == "JPEG"
+        assert standardized.mode == "RGB"
+        assert standardized.size == (1500, 1500)
+        assert standardized.getpixel((680, 750))[2] > 240
+        assert min(standardized.getpixel((820, 750))) > 240
+
+
+def test_pad_white_converts_cmyk_jpeg_to_rgb() -> None:
+    image = Image.new("CMYK", (40, 20), (0, 255, 255, 0))
+    content = BytesIO()
+    image.save(content, format="JPEG")
+    image.close()
+
+    result = standardize_pad_white(content.getvalue())
+
+    with Image.open(BytesIO(result.content)) as standardized:
+        red, green, blue = standardized.getpixel((750, 750))
+        assert standardized.mode == "RGB"
+        assert red > 200 and green < 60 and blue < 60
+
+
+def test_pad_white_applies_exif_orientation() -> None:
+    result = standardize_pad_white(image_bytes("JPEG", (40, 20), orientation=6))
+
+    assert result.source_dimensions == (20, 40)
+
+
+def test_pad_white_preserves_aspect_ratio_without_default_upscaling() -> None:
+    small = standardize_pad_white(image_bytes("PNG", (200, 100)))
+    large = standardize_pad_white(image_bytes("PNG", (2800, 700)))
+
+    assert small.low_resolution
+    assert not large.low_resolution
+    with Image.open(BytesIO(small.content)) as standardized:
+        assert standardized.getpixel((750, 750))[2] > 240
+        assert min(standardized.getpixel((600, 750))) > 240
+    with Image.open(BytesIO(large.content)) as standardized:
+        assert standardized.getpixel((60, 750))[2] > 240
+        assert standardized.getpixel((1440, 750))[2] > 240
+        assert min(standardized.getpixel((750, 550))) > 240
+
+
+@pytest.mark.parametrize(
+    ("mode", "image_format"),
+    [("P", "PNG"), ("L", "PNG"), ("RGB", "WEBP")],
+)
+def test_pad_white_accepts_palette_greyscale_and_webp(mode: str, image_format: str) -> None:
+    image = Image.new(mode, (12, 8))
+    content = BytesIO()
+    image.save(content, format=image_format)
+    image.close()
+
+    result = standardize_pad_white(content.getvalue())
+
+    with Image.open(BytesIO(result.content)) as standardized:
+        assert standardized.format == "JPEG"
+        assert standardized.mode == "RGB"
+        assert standardized.size == (1500, 1500)
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"broken", "Cannot decode image data"),
+        (image_bytes("GIF"), "not JPEG, PNG, or WEBP"),
+    ],
+)
+def test_pad_white_rejects_broken_or_unsupported_images(content: bytes, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        standardize_pad_white(content)
+
+
+def test_pad_white_enforces_decoded_pixel_limit() -> None:
+    with pytest.raises(ValueError, match="exceeds 95 decoded pixels"):
+        standardize_pad_white(image_bytes(size=(12, 8)), max_pixels=95)
