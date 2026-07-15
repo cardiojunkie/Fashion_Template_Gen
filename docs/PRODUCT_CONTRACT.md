@@ -63,6 +63,10 @@ must never create a registry value. Broad image-derived color retains image prov
 flag so Phase 6 can highlight the populated cell. Size is never inferred from garment proportions
 or a person wearing the garment.
 
+Phase 6 requires explicit review of broad image-derived color. Yellow CMS highlighting and the QC
+inference note apply only when the reviewer accepts the unchanged image proposal. An edited color
+is a reviewer override and is not labeled as image-inferred.
+
 ## Normalization and output
 
 Code owns final CMS values. Match in this order: exact canonical value, Unicode/case/whitespace/punctuation-normalized canonical value, approved alias, optional review-only fuzzy suggestion, then blank plus review flag. Never silently add a model-proposed value.
@@ -75,6 +79,10 @@ Code owns final CMS values. Match in this order: exact canonical value, Unicode/
 - `.xlsx` is canonical. A true `.xls` requires a real tested writer/conversion path and must be blocked if data would be lost; never rename an `.xlsx` file.
 - Keep validation/review reports separate from the CMS workbook.
 
+Topwear review decisions persist in SQLite and retain proposal/final value, action, note,
+timestamp, registry/prompt/schema/model versions, and evidence reference. Registry changes
+revalidate stored enum values and flag invalid decisions without silently changing them.
+
 ## Catalog copy
 
 - Use normalized accepted facts only; do not resend images for copy generation.
@@ -82,6 +90,11 @@ Code owns final CMS values. Match in this order: exact canonical value, Unicode/
 - Target six short bullets but leave unsupported bullets blank and flag insufficient evidence.
 - Use attribute-set-specific configured templates and approved golden examples.
 - Do not mention missing data, image availability, warranties, or unsupported claims.
+
+For the Topwear MVP, code deterministically builds identical `name` and
+`attributes__product_title` values from accepted brand, approved series name when available,
+material, product type, SKU-specific size, color, and explicit model number. Missing components
+are omitted. SKU, EAN, base code, and model year never enter the title.
 
 ## Auditability
 

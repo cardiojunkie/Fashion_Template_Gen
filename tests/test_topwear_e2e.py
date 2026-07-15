@@ -34,6 +34,7 @@ from fashion_cms.topwear_extraction import (
     TOPWEAR_PROFILE_ID,
     run_topwear_job,
 )
+from fashion_cms.variant_service import build_variant_groups
 
 
 ROOT = Path(__file__).parents[1]
@@ -178,10 +179,16 @@ def test_upload_to_review_copy_export_and_qc_end_to_end(tmp_path: Path) -> None:
 
     copy_client = fake_catalog_client()
     catalogs = generate_catalog_batch(
-        parsed.rows, facts, registry, copy_client, model="phase6-fake"
+        parsed.rows,
+        facts,
+        registry,
+        copy_client,
+        model="phase6-fake",
+        groups=database.load_groups(job_id),
     )
     assert len(copy_client.calls) == 1
     assert catalogs["0001-S"].content == catalogs["0001-M"].content
+    assert not {"S", "M"} & set(catalogs["0001-S"].content.keywords.split(", "))
     assert ", S," in catalogs["0001-S"].title
     assert ", M," in catalogs["0001-M"].title
 
@@ -236,7 +243,18 @@ def test_color_or_design_differences_prevent_catalog_reuse() -> None:
         },
     }
     client = fake_catalog_client()
+    groups = build_variant_groups(
+        parsed.rows,
+        modes={"base:BASE": AnalysisMode.BASE_CODE_SIZE_ONLY},
+    )
 
-    generate_catalog_batch(parsed.rows, facts, registry, client, model="phase6-fake")
+    generate_catalog_batch(
+        parsed.rows,
+        facts,
+        registry,
+        client,
+        model="phase6-fake",
+        groups=groups,
+    )
 
     assert len(client.calls) == 2

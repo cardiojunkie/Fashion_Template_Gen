@@ -2,11 +2,10 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 5 adds a Topwear-only, evidence-aware multimodal extraction MVP. It supports per-SKU
-and size-only base-code analysis, strict Structured Outputs, validated provenance, bounded
-retry, result caching, and a deterministic fake client for offline use. Live extraction calls
-the OpenAI Responses API directly and requires explicit confirmation. It does not yet provide
-editable review, catalog copy, or final CMS exports.
+Phase 6 completes the Topwear MVP: evidence-aware extraction flows into canonical normalization,
+persisted review, factual text-only catalog copy, one exact 45-column CMS row per SKU, and a
+separate QC workbook. Live OpenAI calls remain optional and explicitly confirmed; fake extraction
+and copy clients keep the default workflow and tests offline.
 
 The existing workbook validation, blank CMS export, SSRF-safe 1500 × 1500 image downloader,
 persistent jobs, Attribute Registry, and Job History remain available.
@@ -44,6 +43,23 @@ Streamlit reruns and Codespace restarts. The CMS Generator never stores uploaded
 the job database; it stores validated metadata and SHA-256 hashes. Re-upload the same validated
 inputs in CMS Generator when retrying Phase 5 work after a process restart.
 
+## Review and export Topwear
+
+After extraction, review each proposed attribute in CMS Generator. You can filter by conflict,
+unmapped/unknown/invalid values, low confidence, image-derived color, completion state, base code,
+SKU, or header. Enum edits are limited to active registry values; accept, edit, blank, and reject
+decisions persist across reruns and restarts. Unresolved decisions block catalog copy and export.
+
+Catalog copy uses accepted facts only and sends no images. Code builds the SKU-specific title and
+validates keywords and up to six factual bullets. Unsupported bullet cells remain blank. The final
+CMS download contains only the exact Topwear headers; the separate QC download contains provenance,
+review actions, warnings, and image-color inference notes. An accepted broad image-derived color is
+yellow in the CMS workbook; supplied or reviewer-edited colors are not.
+
+The active registry is authoritative. Add approved aliases to `Value_Aliases` for the same header
+only, then validate the workbook. A registry change revalidates stored enum decisions rather than
+silently changing them.
+
 Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`. Store SKU, base code, and EAN cells as text. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
 
 The Image Downloader page accepts a separate `.xlsx` workbook with text SKU values in
@@ -52,7 +68,7 @@ so a URL in column C is always saved as `SKU-2.jpg`, even when column B is blank
 Only HTTP/HTTPS URLs resolving to public destinations are fetched. Successful images are
 EXIF-oriented, fitted without default crop/stretch/upscale, and centered on a white canvas.
 
-## Configure Topwear extraction
+## Configure Topwear extraction and copy
 
 Fake extraction is selected by default and does not require an API key or internet access. For
 an explicitly confirmed live request, set these server-side environment variables:
@@ -82,6 +98,12 @@ the smallest opt-in live integration test separately:
 RUN_LIVE_LLM_TESTS=1 python -m pytest -m live
 ```
 
+Run the Phase 6 upload-to-export path directly with:
+
+```bash
+python -m pytest tests/test_topwear_e2e.py
+```
+
 ## Maintain the attribute registry
 
 The source of truth is `config/attribute_registry.xlsx`. Edit it with a workbook application while preserving these sheet and column names:
@@ -98,6 +120,7 @@ Do not add guessed CMS values. Add approved canonical values to `Permitted_Value
 python -m fashion_cms.registry config/attribute_registry.xlsx
 ```
 
-Restart Streamlit after replacing the workbook. The committed `A-Line Fit` → `A-Line` alias is inactive pending an approved `A-Line` canonical value.
+Restart Streamlit after replacing the workbook. The active header-scoped alias maps
+`A-Line Fit` to the permitted `A-Line` value for `attributes__fit_type` only.
 
 Project scope and phase gates live in `PLAN.md`; current progress lives in `docs/STATUS.md`.

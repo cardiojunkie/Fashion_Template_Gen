@@ -163,6 +163,35 @@ def test_source_priority_and_color_conflict_are_preserved(registry) -> None:
     assert design.conflict is not None
 
 
+def test_structured_input_keeps_lower_priority_facts_for_other_headers(registry) -> None:
+    database = JobDatabase(":memory:")
+    data = json.dumps({"brand": "Acme", "notes": "; color: Blue;"})
+    job_id = create_extracted_job(database, registry, (input_row(data),))
+    items = {item.header: item for item in load_review_items(database, job_id, registry)}
+
+    assert items["attributes__brand"].source_priority == SourcePriority.STRUCTURED_INPUT
+    assert items["attributes__color"].proposed_value == "Blue"
+    assert items["attributes__color"].source_priority == SourcePriority.MODEL_DATA
+
+
+def test_approved_alias_and_canonical_sources_do_not_create_false_conflict(registry) -> None:
+    database = JobDatabase(":memory:")
+    job_id = create_extracted_job(
+        database,
+        registry,
+        (input_row(json.dumps({"fit_type": "A-Line Fit"})),),
+    )
+    fit = next(
+        item
+        for item in load_review_items(database, job_id, registry)
+        if item.header == "attributes__fit_type"
+    )
+
+    assert fit.proposed_value == "A-Line"
+    assert fit.conflict is None
+    assert "do not yet distinguish" in (fit.warning or "")
+
+
 def test_all_review_actions_persist_across_restart(tmp_path: Path, registry) -> None:
     path = tmp_path / "review.sqlite3"
     database = JobDatabase(path)

@@ -163,6 +163,12 @@ _PLACEHOLDERS = {
 }
 
 
+def _generic_definition(registry: Registry, header: str) -> bool:
+    label = normalize_value(header.removeprefix("attributes__").replace("_", " "))
+    description = normalize_value(registry.definitions_by_header[header].description)
+    return description in {label, f"cms output field for {label}"}
+
+
 def _header_for_key(key: str, registry: Registry) -> str | None:
     if key in registry.definitions_by_header:
         return key
@@ -284,13 +290,22 @@ def _proposal(
     schema_version: str,
     model: str,
 ) -> ReviewItem:
-    ranked = sorted(candidates, key=lambda candidate: candidate.priority)
+    ranked = sorted(candidates, key=lambda candidate: (candidate.priority, candidate.blocked))
     valued = [candidate for candidate in ranked if candidate.raw_value or candidate.canonical_value]
     selected = valued[0] if valued else ranked[0]
     raw = selected.raw_value or selected.canonical_value
     normalized = normalize_attribute_value(registry, header, raw)
     values = {
-        normalize_value(candidate.canonical_value or candidate.raw_value or "")
+        normalize_value(
+            normalize_attribute_value(
+                registry,
+                header,
+                candidate.raw_value or candidate.canonical_value,
+            ).canonical_value
+            or candidate.canonical_value
+            or candidate.raw_value
+            or ""
+        )
         for candidate in valued
         if candidate.canonical_value or candidate.raw_value
     }
@@ -513,7 +528,15 @@ def build_review_items(
     group_by_key = {group.key: group for group in groups}
     for row in rows:
         structured = _structured_input_candidates(row, registry, allowed_headers)
-        row_candidates = structured or _model_data_candidates(row, allowed_headers)
+        structured_headers = {candidate.header for candidate in structured}
+        row_candidates = (
+            *structured,
+            *(
+                candidate
+                for candidate in _model_data_candidates(row, allowed_headers)
+                if candidate.header not in structured_headers
+            ),
+        )
         for candidate in row_candidates:
             candidates[(row.sku, candidate.header)].append(candidate)
 
@@ -587,6 +610,26 @@ def build_review_items(
         for first, second in _OVERLAPPING_HEADERS:
             first_index = by_key.get((row.sku, first))
             second_index = by_key.get((row.sku, second))
+            present = tuple(
+                index
+                for index in (first_index, second_index)
+                if index is not None
+                and (built[index].raw_value or built[index].proposed_value)
+            )
+            if present and any(_generic_definition(registry, header) for header in (first, second)):
+                message = (
+                    f"Registry definitions do not yet distinguish {first} from {second}; "
+                    "review the proposed field before accepting it."
+                )
+                for index in present:
+                    built[index] = built[index].model_copy(
+                        update={
+                            "warning": " ".join(
+                                filter(None, (built[index].warning, message))
+                            ),
+                            "requires_review": True,
+                        }
+                    )
             if first_index is None or second_index is None:
                 continue
             first_item, second_item = built[first_index], built[second_index]

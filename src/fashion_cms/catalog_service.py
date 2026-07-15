@@ -16,7 +16,7 @@ from fashion_cms.llm_service import (
     LLMResponse,
     call_with_retry,
 )
-from fashion_cms.models import InputRow
+from fashion_cms.models import AnalysisMode, InputRow
 from fashion_cms.registry import DataType, Registry, normalize_value
 from fashion_cms.review import (
     ReviewAction,
@@ -25,6 +25,7 @@ from fashion_cms.review import (
     unresolved_review_items,
     validate_final_value,
 )
+from fashion_cms.variant_service import VariantGroup
 
 
 CONTENT_PROMPT_VERSION = "topwear-catalog-copy-v1"
@@ -108,8 +109,18 @@ _MISSING_DISCLAIMER = re.compile(
 )
 _INTERNAL_REFERENCE = re.compile(r"\b(?:input|image|business_rule):", re.I)
 _MODEL_YEAR = re.compile(r"\bmodel\s+year\b", re.I)
-_BULLET_EXCLUDED_ONLY = frozenset(
-    {"attributes__color", "attributes__size", "attributes__model"}
+_MODEL_YEAR_LABEL = re.compile(
+    r"(?:^|[;,|\n])\s*model[ _-]?year\s*[:=]\s*([^;,|\n]+)", re.I
+)
+_BULLET_DISALLOWED_SOURCES = frozenset(
+    {
+        "attributes__color",
+        "attributes__size",
+        "attributes__model",
+        "attributes__country_of_origin",
+        "attributes__package_contents",
+        "attributes__in_the_box",
+    }
 )
 _SAFE_BULLET_WORDS = frozenset(
     "a an and care closure construction cuff design detail fabric fastening feature "
@@ -222,6 +233,28 @@ def sanitize_excel_text(value: str) -> str:
         for character in value
     )
     return f"'{cleaned}" if cleaned.lstrip().startswith(_FORMULA_PREFIXES) else cleaned
+
+
+def model_year_schema_warnings(rows: Sequence[InputRow]) -> tuple[str, ...]:
+    warnings = []
+    for row in rows:
+        text = row.model_code_input_data or ""
+        try:
+            document = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            document = None
+        structured = isinstance(document, dict) and any(
+            normalize_value(str(key)) == "model year"
+            and value is not None
+            and str(value).strip()
+            for key, value in document.items()
+        )
+        if structured or _MODEL_YEAR_LABEL.search(text):
+            warnings.append(
+                f"{row.sku}: model-year data was retained in source only; "
+                "Topwear has no approved model-year output column."
+            )
+    return tuple(warnings)
 
 
 def _deduplicated_words(components: Sequence[str | None]) -> str:
@@ -405,6 +438,15 @@ def validate_catalog_output(
             errors.append("Keyword group cites an unaccepted source header.")
             continue
         normalized_text = normalize_value(group.text)
+        if (
+            normalized_text in _PLACEHOLDERS
+            or _PROHIBITED.search(group.text)
+            or _MISSING_DISCLAIMER.search(group.text)
+            or _MODEL_YEAR.search(group.text)
+            or _INTERNAL_REFERENCE.search(group.text)
+        ):
+            errors.append("Keyword group contains prohibited or internal content.")
+            continue
         supported = any(
             normalized_text == normalize_value(accepted[header])
             for header in group.source_headers
@@ -422,19 +464,22 @@ def validate_catalog_output(
     bullet_sources = []
     openings = set()
     seen_bullets = set()
+    used_fact_values = set()
     for bullet in wire.bullets:
         text = bullet.text.strip()
         normalized_text = normalize_value(text)
         sources = set(bullet.source_headers)
-        if not sources or any(header not in accepted for header in sources):
+        accepted_sources = sources & accepted.keys()
+        if not sources or accepted_sources != sources:
             errors.append("Bullet cites an unaccepted source header.")
-        if sources and sources <= _BULLET_EXCLUDED_ONLY:
+        if sources & _BULLET_DISALLOWED_SOURCES:
             errors.append("Color-, size-, or model-only bullets are not allowed.")
-        if not any(normalize_value(accepted[header]) in normalized_text for header in sources):
+        fact_values = {normalize_value(accepted[header]) for header in accepted_sources}
+        if not any(value in normalized_text for value in fact_values):
             errors.append("Bullet is not traceable to its accepted facts.")
         supported_words = {
             word
-            for header in sources
+            for header in accepted_sources
             for word in normalize_value(accepted[header]).split()
         }
         if set(normalized_text.split()) - supported_words - _SAFE_BULLET_WORDS:
@@ -449,12 +494,15 @@ def validate_catalog_output(
             errors.append("Internal evidence references cannot enter catalog copy.")
         if normalized_text in seen_bullets:
             errors.append("Repeated bullets are not allowed.")
+        if fact_values & used_fact_values:
+            errors.append("The same accepted fact cannot be repeated across bullets.")
         opening = " ".join(normalized_text.split()[:2])
         if opening and opening in openings:
             errors.append("Repeated bullet openings are not allowed.")
         if title and normalized_text == normalize_value(title):
             errors.append("A bullet cannot repeat the title.")
         seen_bullets.add(normalized_text)
+        used_fact_values.update(fact_values)
         openings.add(opening)
         bullet_texts.append(text)
         bullet_sources.append(tuple(bullet.source_headers))
@@ -542,24 +590,45 @@ def generate_catalog_batch(
     *,
     model: str,
     keyword_separator: str = KEYWORD_SEPARATOR,
+    groups: Sequence[VariantGroup] = (),
 ) -> dict[str, SkuCatalog]:
     shared: dict[tuple[object, ...], CatalogContent] = {}
+    group_by_sku = {sku: group for group in groups for sku in group.skus}
     result = {}
     for row in rows:
         facts = dict(facts_by_sku.get(row.sku, {}))
-        signature = (
-            row.base_code or row.sku,
-            tuple(
-                sorted(
-                    (header, value)
-                    for header, value in facts.items()
-                    if header != "attributes__size"
+        group = group_by_sku.get(row.sku)
+        unsafe_shared_text = bool(
+            group
+            and any(
+                warning.startswith(
+                    ("Descriptions differ beyond", "Multiple pack counts")
                 )
-            ),
+                for warning in group.size_only_warnings
+            )
+        )
+        share_size_only = bool(
+            group
+            and group.analysis_mode == AnalysisMode.BASE_CODE_SIZE_ONLY
+            and not unsafe_shared_text
+        )
+        copy_facts = (
+            {
+                header: value
+                for header, value in facts.items()
+                if header != "attributes__size"
+            }
+            if share_size_only
+            else facts
+        )
+        signature = (
+            ("group", group.key, tuple(sorted(copy_facts.items())))
+            if share_size_only and group is not None
+            else ("sku", row.sku)
         )
         if signature not in shared:
             shared[signature] = generate_catalog_content(
-                facts,
+                copy_facts,
                 registry,
                 client,
                 model=model,
@@ -586,8 +655,6 @@ def _export_errors(
         errors.append("Every output row requires a SKU.")
     if len({row.sku for row in rows}) != len(rows):
         errors.append("Duplicate SKU rows are not allowed.")
-    if {item.sku for item in items} != {row.sku for row in rows}:
-        errors.append("Review coverage does not match every input SKU.")
     if unresolved := unresolved_review_items(items):
         errors.append(f"{len(unresolved)} critical review item(s) remain unresolved.")
     known_skus = {row.sku for row in rows}
@@ -615,6 +682,9 @@ def build_topwear_workbook(
     errors = _export_errors(rows, facts_by_sku, items, registry)
     if set(catalogs) != {row.sku for row in rows}:
         errors.append("Catalog content must exist for every input SKU.")
+    for sku, catalog in catalogs.items():
+        if catalog.sku != sku:
+            errors.append(f"Catalog content identity does not match SKU {sku}.")
     if errors:
         raise ExportBlockedError(errors)
 
@@ -666,7 +736,7 @@ def build_topwear_workbook(
                 header == "attributes__color"
                 and review_item is not None
                 and review_item.image_inferred_color
-                and review_item.review_action in {ReviewAction.ACCEPT, ReviewAction.EDIT}
+                and review_item.review_action == ReviewAction.ACCEPT
                 and review_item.decision_valid
                 and value
             ):
@@ -707,7 +777,7 @@ def validate_topwear_workbook(
             (item.sku, item.header)
             for item in items
             if item.image_inferred_color
-            and item.review_action in {ReviewAction.ACCEPT, ReviewAction.EDIT}
+            and item.review_action == ReviewAction.ACCEPT
             and item.decision_valid
         }
         for row_number, row in enumerate(input_rows, start=2):
@@ -728,6 +798,9 @@ def validate_topwear_workbook(
                     errors.append(f"Invalid enum at {cell.coordinate}.")
                 if isinstance(value, str) and normalize_value(value.lstrip("'")) in _PLACEHOLDERS:
                     errors.append(f"Placeholder text found at {cell.coordinate}.")
+                limit = _max_length(registry, header)
+                if limit is not None and value is not None and len(str(value)) > limit:
+                    errors.append(f"Configured character limit exceeded at {cell.coordinate}.")
             color_column = TOPWEAR_HEADERS.index("attributes__color") + 1
             color_cell = worksheet.cell(row=row_number, column=color_column)
             yellow = color_cell.fill.fill_type == "solid" and str(
@@ -742,7 +815,10 @@ def validate_topwear_workbook(
 
 
 def build_qc_report(
-    items: Sequence[ReviewItem], catalogs: Mapping[str, SkuCatalog] | None = None
+    items: Sequence[ReviewItem],
+    catalogs: Mapping[str, SkuCatalog] | None = None,
+    *,
+    rows: Sequence[InputRow] = (),
 ) -> bytes:
     workbook = Workbook()
     worksheet = workbook.active
@@ -755,7 +831,7 @@ def build_qc_report(
             f"Color inferred from image using broad value: {item.final_value}"
             if item.image_inferred_color
             and item.final_value
-            and item.review_action in {ReviewAction.ACCEPT, ReviewAction.EDIT}
+            and item.review_action == ReviewAction.ACCEPT
             and item.decision_valid
             else ""
         )
@@ -808,6 +884,35 @@ def build_qc_report(
                 )
                 cell.data_type = "s"
             next_row += 1
+    metadata_by_sku = {item.sku: item for item in items}
+    for warning in model_year_schema_warnings(rows):
+        sku = warning.partition(":")[0]
+        metadata = metadata_by_sku.get(sku)
+        values = (
+            sku,
+            metadata.base_code if metadata and metadata.base_code else "",
+            "attributes__model_year (pending schema)",
+            "",
+            "structured_input",
+            f"input:{sku}",
+            "Pending schema decision",
+            "",
+            warning,
+            "",
+            metadata.registry_version if metadata else "",
+            metadata.prompt_version if metadata else "",
+            metadata.schema_version if metadata else "",
+            metadata.model if metadata else "",
+            "",
+        )
+        for column, value in enumerate(values, start=1):
+            cell = worksheet.cell(
+                row=next_row,
+                column=column,
+                value=sanitize_excel_text(str(value)),
+            )
+            cell.data_type = "s"
+        next_row += 1
     output = BytesIO()
     workbook.save(output)
     workbook.close()

@@ -10,6 +10,7 @@ from fashion_cms.catalog_service import (
     build_topwear_workbook,
     fake_catalog_client,
     generate_catalog_batch,
+    model_year_schema_warnings,
 )
 from fashion_cms.excel_service import (
     SYSTEM_COPY_FIELDS,
@@ -623,8 +624,11 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
     review_items = load_review_items(database, job_id, registry)
     if not review_items:
         return
+    rows = database.load_rows(job_id)
 
     st.subheader("Topwear attribute review")
+    for warning in model_year_schema_warnings(rows):
+        st.warning(warning)
     filters = st.multiselect(
         "Review filters",
         (
@@ -660,7 +664,7 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
             "Unmapped value": item.proposal_status == ProposalStatus.UNMAPPED,
             "Missing permitted value": (
                 registry.definitions_by_header[item.header].data_type.value == "ENUM"
-                and not registry.permitted_values_by_header[item.header]
+                and item.proposal_status == ProposalStatus.UNMAPPED
             ),
             "Image-inferred color": item.image_inferred_color,
             "Low confidence": item.confidence is not None and item.confidence.value == "low",
@@ -830,12 +834,13 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
                 client = OpenAIResponsesClient(live_settings)
                 model = live_settings.model or job.context.model_identifier
             catalogs = generate_catalog_batch(
-                database.load_rows(job_id),
+                rows,
                 facts,
                 registry,
                 client,
                 model=model,
                 keyword_separator=os.environ.get("FASHION_CMS_KEYWORD_SEPARATOR", ", "),
+                groups=database.load_groups(job_id),
             )
         except Exception as exc:
             st.error(f"Catalog copy could not be accepted: {exc}")
@@ -869,9 +874,8 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
         width="stretch",
     )
     try:
-        rows = database.load_rows(job_id)
         cms = build_topwear_workbook(rows, review_items, catalogs, registry)
-        qc = build_qc_report(review_items, catalogs)
+        qc = build_qc_report(review_items, catalogs, rows=rows)
     except Exception as exc:
         st.error(str(exc))
         return

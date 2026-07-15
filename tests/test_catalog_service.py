@@ -15,6 +15,7 @@ from fashion_cms.catalog_service import (
     ContentValidationError,
     ExportBlockedError,
     KeywordGroup,
+    QC_HEADERS,
     SkuCatalog,
     TOPWEAR_HEADERS,
     build_qc_report,
@@ -214,6 +215,54 @@ def test_repeated_bullets_openings_and_unaccepted_sources_are_rejected(registry)
         )
 
 
+def test_untrusted_provenance_and_prohibited_keywords_fail_validation(registry) -> None:
+    bad_source = CatalogWireOutput(
+        keyword_groups=(),
+        bullets=(CatalogBullet(text="Cotton fabric.", source_headers=("bad",)),),
+    )
+    with pytest.raises(ContentValidationError, match="unaccepted source"):
+        validate_catalog_output(
+            bad_source, {"attributes__material": "Cotton"}, registry
+        )
+
+    promotional = CatalogWireOutput(
+        keyword_groups=(
+            KeywordGroup(
+                text="Premium Cotton",
+                source_headers=("attributes__material",),
+            ),
+        ),
+        bullets=(),
+    )
+    with pytest.raises(ContentValidationError, match="prohibited"):
+        validate_catalog_output(
+            promotional, {"attributes__material": "Premium Cotton"}, registry
+        )
+
+
+def test_same_fact_cannot_fill_multiple_bullets(registry) -> None:
+    wire = CatalogWireOutput(
+        keyword_groups=(),
+        bullets=(
+            CatalogBullet(
+                text="Made with Cotton.", source_headers=("attributes__material",)
+            ),
+            CatalogBullet(
+                text="Cotton fabric.", source_headers=("attributes__fabric",)
+            ),
+        ),
+    )
+    with pytest.raises(ContentValidationError, match="same accepted fact"):
+        validate_catalog_output(
+            wire,
+            {
+                "attributes__material": "Cotton",
+                "attributes__fabric": "Cotton",
+            },
+            registry,
+        )
+
+
 def test_generation_retries_validation_once(registry) -> None:
     valid = json.dumps(
         {
@@ -305,6 +354,63 @@ def test_export_has_exact_headers_identifiers_and_color_highlighting(registry) -
     qc.close()
 
 
+def test_reviewer_edited_image_color_is_not_marked_as_image_inferred(registry) -> None:
+    row = InputRow(row_number=2, sku="0001")
+    edited = reviewed_item(
+        "0001", "attributes__color", "Blue", registry, image_color=True
+    ).model_copy(
+        update={
+            "review_action": ReviewAction.EDIT,
+            "final_value": "Red",
+        }
+    )
+    catalogs = {"0001": SkuCatalog(sku="0001", title="Red", content=content())}
+
+    workbook = load_workbook(
+        BytesIO(build_topwear_workbook((row,), (edited,), catalogs, registry)),
+        data_only=False,
+    )
+    color_column = TOPWEAR_HEADERS.index("attributes__color") + 1
+    assert workbook["CMS Upload"].cell(2, color_column).fill.fill_type is None
+    workbook.close()
+
+    qc = load_workbook(BytesIO(build_qc_report((edited,))), data_only=False)
+    note_column = QC_HEADERS.index("Image-inference note") + 1
+    assert qc["Topwear QC"].cell(2, note_column).value is None
+    qc.close()
+
+
+def test_sku_without_supported_observations_exports_as_a_blank_row(registry) -> None:
+    row = InputRow(row_number=2, sku="0001", attributes__lulu_ean="0002")
+    catalogs = {
+        "0001": SkuCatalog(
+            sku="0001",
+            title="",
+            content=CatalogContent(
+                keywords="",
+                bullets=("", "", "", "", "", ""),
+                keyword_source_headers=(),
+                bullet_source_headers=(),
+                model="fake",
+            ),
+        )
+    }
+
+    workbook = load_workbook(
+        BytesIO(build_topwear_workbook((row,), (), catalogs, registry)),
+        data_only=False,
+    )
+    worksheet = workbook["CMS Upload"]
+    assert worksheet.max_row == 2
+    assert worksheet.cell(2, 1).value == "0001"
+    assert worksheet.cell(2, 3).value == "0002"
+    assert all(
+        worksheet.cell(2, column).value is None
+        for column in range(5, len(TOPWEAR_HEADERS) + 1)
+    )
+    workbook.close()
+
+
 def test_invalid_enum_or_unresolved_review_blocks_export(registry) -> None:
     row = InputRow(row_number=2, sku="0001")
     catalog = {"0001": SkuCatalog(sku="0001", title="", content=content())}
@@ -317,3 +423,43 @@ def test_invalid_enum_or_unresolved_review_blocks_export(registry) -> None:
         build_topwear_workbook((row,), (invalid,), catalog, registry)
     with pytest.raises(ExportBlockedError, match="unresolved"):
         build_topwear_workbook((row,), (unresolved,), catalog, registry)
+
+
+def test_export_blocks_mismatched_catalog_identity_and_configured_limits(registry) -> None:
+    row = InputRow(row_number=2, sku="0001")
+    item = reviewed_item("0001", "attributes__brand", "Acme", registry)
+    mismatched = {
+        "0001": SkuCatalog(sku="other", title="Acme", content=content())
+    }
+    with pytest.raises(ExportBlockedError, match="identity"):
+        build_topwear_workbook((row,), (item,), mismatched, registry)
+
+    definitions = dict(registry.definitions_by_header)
+    for header in ("name", "attributes__product_title"):
+        definitions[header] = definitions[header].model_copy(
+            update={"unit_or_format": "max_length:5"}
+        )
+    limited = registry.model_copy(update={"definitions_by_header": definitions})
+    catalogs = {
+        "0001": SkuCatalog(
+            sku="0001", title="Acme Topwear", content=content()
+        )
+    }
+    with pytest.raises(ExportBlockedError, match="character limit"):
+        build_topwear_workbook((row,), (item,), catalogs, limited)
+
+
+def test_model_year_is_recorded_only_as_a_pending_qc_schema_decision() -> None:
+    row = InputRow(
+        row_number=2,
+        sku="0001",
+        model_code_input_data=json.dumps({"model_year": 2026}),
+    )
+
+    qc = load_workbook(
+        BytesIO(build_qc_report((), rows=(row,))), data_only=False
+    )["Topwear QC"]
+    values = [cell.value for cell in qc[2]]
+
+    assert "pending schema" in values[2]
+    assert "no approved model-year output column" in values[8]
