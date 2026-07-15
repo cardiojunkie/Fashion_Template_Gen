@@ -92,8 +92,10 @@ def test_committed_registry_has_one_correct_definition_per_header() -> None:
     )
     assert registry.definitions_by_header["attributes__color"].data_type == DataType.ENUM
     assert set(registry.profiles_by_id) == {("topwear", "topwear_mvp")}
-    assert registry.aliases[0].active is False
-    assert registry.aliases_by_header == {}
+    assert registry.definitions_by_header["attributes__fit_type"].data_type == DataType.ENUM
+    assert registry.permitted_values_by_header["attributes__fit_type"] == ("A-Line",)
+    assert registry.aliases[0].active is True
+    assert registry.aliases_by_header == {"attributes__fit_type": {"a line fit": "A-Line"}}
     assert len(registry.fingerprint) == 64
 
 
@@ -141,7 +143,7 @@ def test_missing_definition_is_rejected(tmp_path: Path) -> None:
 
 def test_active_alias_without_canonical_value_is_rejected(tmp_path: Path) -> None:
     def mutate(workbook) -> None:
-        workbook["Value_Aliases"].cell(2, 4).value = True
+        workbook["Value_Aliases"].cell(2, 3).value = "Missing"
 
     path = workbook_fixture(tmp_path, mutate)
     with pytest.raises(RegistryValidationError, match="points to missing canonical value"):

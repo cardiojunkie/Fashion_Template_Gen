@@ -5,6 +5,12 @@ from pathlib import Path
 import streamlit as st
 
 from fashion_cms.database import InvalidJobEdit, InvalidStateTransition, JobDatabase
+from fashion_cms.catalog_service import (
+    build_qc_report,
+    build_topwear_workbook,
+    fake_catalog_client,
+    generate_catalog_batch,
+)
 from fashion_cms.excel_service import (
     SYSTEM_COPY_FIELDS,
     build_blank_cms_workbook,
@@ -29,6 +35,15 @@ from fashion_cms.models import (
     WorkItemStatus,
 )
 from fashion_cms.registry import load_registry
+from fashion_cms.review import (
+    ProposalStatus,
+    ReviewAction,
+    accepted_facts,
+    bulk_accept_safe,
+    load_review_items,
+    persist_review_decision,
+    unresolved_review_items,
+)
 from fashion_cms.topwear_extraction import (
     PROMPT_VERSION as TOPWEAR_PROMPT_VERSION,
     SCHEMA_VERSION as TOPWEAR_SCHEMA_VERSION,
@@ -120,7 +135,10 @@ def cms_workbook_page() -> None:
         settings_error = str(exc)
     execution_mode = "Planning only"
     if attribute_set == "topwear":
-        st.info("Phase 5 Topwear MVP · extraction is read-only; CMS copy and export are not generated.")
+        st.info(
+            "Phase 6 Topwear MVP · extract, review canonical facts, generate factual copy, "
+            "and export separate CMS and QC workbooks."
+        )
         execution_mode = st.radio(
             "Extraction client",
             ("Fake (offline)", "OpenAI Responses API (live)"),
@@ -282,7 +300,17 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
         and job.context.prompt_version == TOPWEAR_PROMPT_VERSION
         and job.context.schema_version == TOPWEAR_SCHEMA_VERSION
     )
-    cached_keys = cached_item_keys(database, job_id, registry) if phase5 else frozenset()
+    current_registry = job.context.registry_version == registry.fingerprint
+    cached_keys = (
+        cached_item_keys(database, job_id, registry)
+        if phase5 and current_registry
+        else frozenset()
+    )
+    if phase5 and not current_registry:
+        st.warning(
+            "The active registry changed after extraction. Stored decisions are revalidated; "
+            "unchanged extraction cache entries are not reused."
+        )
 
     st.subheader(f"Variant analysis job · {job_id}")
     st.caption(f"Status: {job.status.value} · selections and work plan are stored in SQLite.")
@@ -410,6 +438,7 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
     if phase5:
         _topwear_controls(database, job_id, uploaded_images)
         _show_topwear_results(database, job_id)
+        _show_topwear_review(database, job_id)
     else:
         st.info("Phase 5 extraction is blocked because this stored job is not a Topwear MVP job.")
 
@@ -438,11 +467,11 @@ def _topwear_controls(
     except ValueError as exc:
         settings = LLMSettings()
         settings_error = str(exc)
-    configured = fake or (
+    configured = (job.context.registry_version == registry.fingerprint) and (fake or (
         settings.enabled
         and settings.model == job.context.model_identifier
         and settings.image_detail == job.context.image_detail
-    )
+    ))
     confirmed = True
     if fake:
         st.caption("Offline fake client selected. No network request or API key is used.")
@@ -577,6 +606,303 @@ def _show_topwear_results(database: JobDatabase, job_id: str) -> None:
         st.dataframe(messages, hide_index=True, width="stretch")
     elif records:
         st.info("No conflicts or warnings were returned for these work items.")
+
+
+def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
+    items = database.list_work_items(job_id)
+    if not items or any(item.status == WorkItemStatus.FAILED for item in items):
+        if any(item.status == WorkItemStatus.FAILED for item in items):
+            st.warning("Phase 6 review and export remain blocked until extraction failures are resolved.")
+        return
+    if any(
+        item.status not in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+        for item in items
+    ):
+        st.info("Phase 6 review remains blocked until every extraction item finishes.")
+        return
+    review_items = load_review_items(database, job_id, registry)
+    if not review_items:
+        return
+
+    st.subheader("Topwear attribute review")
+    filters = st.multiselect(
+        "Review filters",
+        (
+            "Conflict",
+            "Unmapped value",
+            "Missing permitted value",
+            "Image-inferred color",
+            "Low confidence",
+            "Unknown",
+            "Invalid enum",
+            "User-edited",
+            "Review not completed",
+        ),
+        key=f"review_filters_{job_id}",
+    )
+    base_codes = tuple(dict.fromkeys(item.base_code or "(blank)" for item in review_items))
+    skus = tuple(dict.fromkeys(item.sku for item in review_items))
+    headers = tuple(dict.fromkeys(item.header for item in review_items))
+    filter_columns = st.columns(3)
+    selected_base = filter_columns[0].selectbox(
+        "Base code", ("All", *base_codes), key=f"review_base_{job_id}"
+    )
+    selected_sku = filter_columns[1].selectbox(
+        "SKU", ("All", *skus), key=f"review_sku_{job_id}"
+    )
+    selected_header = filter_columns[2].selectbox(
+        "Attribute header", ("All", *headers), key=f"review_header_{job_id}"
+    )
+
+    def visible(item) -> bool:
+        checks = {
+            "Conflict": bool(item.conflict),
+            "Unmapped value": item.proposal_status == ProposalStatus.UNMAPPED,
+            "Missing permitted value": (
+                registry.definitions_by_header[item.header].data_type.value == "ENUM"
+                and not registry.permitted_values_by_header[item.header]
+            ),
+            "Image-inferred color": item.image_inferred_color,
+            "Low confidence": item.confidence is not None and item.confidence.value == "low",
+            "Unknown": item.proposal_status == ProposalStatus.UNKNOWN,
+            "Invalid enum": not item.decision_valid,
+            "User-edited": item.review_action == ReviewAction.EDIT,
+            "Review not completed": item.requires_review
+            and (item.review_action is None or not item.decision_valid),
+        }
+        return (
+            all(checks[selection] for selection in filters)
+            and (selected_base == "All" or selected_base == (item.base_code or "(blank)"))
+            and (selected_sku == "All" or selected_sku == item.sku)
+            and (selected_header == "All" or selected_header == item.header)
+        )
+
+    filtered = tuple(item for item in review_items if visible(item))
+    st.dataframe(
+        [
+            {
+                "SKU": item.sku,
+                "Base code": item.base_code or "",
+                "Profile": item.product_profile or "",
+                "Attribute": item.header,
+                "Supplied/input": item.supplied_value or "",
+                "Raw extracted": item.raw_value or "",
+                "Proposed canonical": item.proposed_value or "",
+                "Evidence type": item.evidence_type,
+                "Evidence references": ", ".join(item.evidence_references),
+                "Confidence": item.confidence.value if item.confidence else "",
+                "Conflict": item.conflict or "",
+                "Normalization": item.matching_method.value,
+                "Suggestion": (
+                    f"{item.fuzzy_suggestion} ({item.fuzzy_score:.3f})"
+                    if item.fuzzy_suggestion and item.fuzzy_score is not None
+                    else ""
+                ),
+                "Warning/note": item.warning or "",
+                "Final value": item.final_value or "",
+                "Review action": item.review_action.value if item.review_action else "",
+            }
+            for item in filtered
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption(f"Showing {len(filtered):,} of {len(review_items):,} review items.")
+
+    safe_count = sum(item.safe_for_bulk_accept for item in filtered)
+    if st.button(
+        f"Accept {safe_count} safe filtered proposals",
+        disabled=safe_count == 0,
+        key=f"bulk_review_{job_id}",
+    ):
+        bulk_accept_safe(database, filtered, registry)
+        st.rerun()
+
+    actionable = tuple(item for item in filtered if item.requires_review or item.review_action)
+    if actionable:
+        selected_key = st.selectbox(
+            "Edit review item",
+            tuple((item.sku, item.header) for item in actionable),
+            format_func=lambda key: f"{key[0]} · {key[1]}",
+            key=f"review_item_{job_id}",
+        )
+        selected = next(
+            item for item in actionable if (item.sku, item.header) == selected_key
+        )
+        default_action = selected.review_action or (
+            ReviewAction.ACCEPT if selected.proposed_value else ReviewAction.BLANK
+        )
+        action = st.selectbox(
+            "Review action",
+            tuple(ReviewAction),
+            index=tuple(ReviewAction).index(default_action),
+            format_func=lambda value: value.value,
+            key=f"review_action_{job_id}_{selected.sku}_{selected.header}",
+        )
+        final_value = selected.final_value or selected.proposed_value or ""
+        if action == ReviewAction.EDIT:
+            definition = registry.definitions_by_header[selected.header]
+            if definition.data_type.value == "ENUM":
+                permitted = registry.permitted_values_by_header[selected.header]
+                final_value = st.selectbox(
+                    "Final permitted value",
+                    ("", *permitted),
+                    index=("", *permitted).index(final_value) if final_value in permitted else 0,
+                    key=f"review_value_{job_id}_{selected.sku}_{selected.header}",
+                )
+            else:
+                final_value = st.text_input(
+                    "Final value",
+                    value=final_value,
+                    key=f"review_value_{job_id}_{selected.sku}_{selected.header}",
+                )
+        note = st.text_input(
+            "Reviewer note",
+            value=selected.reviewer_note or "",
+            key=f"review_note_{job_id}_{selected.sku}_{selected.header}",
+        )
+        if st.button(
+            "Save review decision",
+            type="primary",
+            key=f"save_review_{job_id}_{selected.sku}_{selected.header}",
+        ):
+            try:
+                persist_review_decision(
+                    database,
+                    selected,
+                    action,
+                    registry,
+                    final_value=final_value,
+                    reviewer_note=note,
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+    unresolved = unresolved_review_items(review_items)
+    if unresolved:
+        st.warning(
+            f"Catalog copy and final export are blocked by {len(unresolved):,} unresolved "
+            "critical review items."
+        )
+        return
+
+    facts = accepted_facts(review_items)
+    decision_digest = sha256(
+        "|".join(
+            f"{item.sku}:{item.header}:{item.review_action}:{item.final_value}"
+            for item in review_items
+        ).encode()
+    ).hexdigest()
+    catalog_state = f"catalog_{job_id}_{decision_digest}"
+    catalogs = st.session_state.get(catalog_state)
+    job = database.get_job(job_id)
+    fake = job.context.model_identifier == "phase5-fake"
+    live_ready = True
+    live_confirmed = True
+    live_settings = None
+    if not fake:
+        try:
+            live_settings = LLMSettings.from_env()
+            live_ready = live_settings.enabled
+        except ValueError as exc:
+            live_ready = False
+            st.error(str(exc))
+        if not live_ready:
+            st.info("Configure OPENAI_API_KEY and OPENAI_MODEL for optional live copy generation.")
+        live_confirmed = st.checkbox(
+            "I confirm this text-only OpenAI catalog-copy request.",
+            key=f"live_catalog_confirm_{job_id}",
+        )
+    if catalogs is None and st.button(
+        "Generate factual catalog copy",
+        type="primary",
+        key=f"generate_catalog_{job_id}_{decision_digest}",
+        disabled=not live_ready or not live_confirmed,
+    ):
+        client = fake_catalog_client()
+        try:
+            if fake:
+                model = "phase6-fake"
+            else:
+                assert live_settings is not None
+                client = OpenAIResponsesClient(live_settings)
+                model = live_settings.model or job.context.model_identifier
+            catalogs = generate_catalog_batch(
+                database.load_rows(job_id),
+                facts,
+                registry,
+                client,
+                model=model,
+                keyword_separator=os.environ.get("FASHION_CMS_KEYWORD_SEPARATOR", ", "),
+            )
+        except Exception as exc:
+            st.error(f"Catalog copy could not be accepted: {exc}")
+        else:
+            st.session_state[catalog_state] = catalogs
+        finally:
+            if isinstance(client, OpenAIResponsesClient):
+                client.close()
+        if catalogs is not None:
+            st.rerun()
+    if catalogs is None:
+        st.info("Review is complete. Generate catalog copy to enable final downloads.")
+        return
+
+    st.subheader("Accepted Topwear titles and catalog copy")
+    st.dataframe(
+        [
+            {
+                "SKU": sku,
+                "Title / name": catalog.title,
+                "Keywords": catalog.content.keywords,
+                **{
+                    f"Bullet {index}": bullet
+                    for index, bullet in enumerate(catalog.content.bullets, start=1)
+                },
+                "Warnings": " ".join(catalog.content.warnings),
+            }
+            for sku, catalog in catalogs.items()
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+    try:
+        rows = database.load_rows(job_id)
+        cms = build_topwear_workbook(rows, review_items, catalogs, registry)
+        qc = build_qc_report(review_items, catalogs)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
+    artifact_root = ROOT / "data" / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    existing = {(artifact.kind, artifact.path) for artifact in database.list_artifacts(job_id)}
+    for kind, filename, content in (
+        ("CMS_WORKBOOK", f"{job_id}_topwear_cms.xlsx", cms),
+        ("QC_REPORT", f"{job_id}_topwear_qc.xlsx", qc),
+    ):
+        path = artifact_root / filename
+        path.write_bytes(content)
+        relative = str(path.relative_to(ROOT))
+        if (kind, relative) not in existing:
+            database.add_artifact(job_id, kind, relative)
+    if job.status == JobStatus.REVIEW_REQUIRED:
+        database.transition_job(job_id, JobStatus.COMPLETED)
+    downloads = st.columns(2)
+    downloads[0].download_button(
+        "Download CMS-ready Topwear workbook",
+        data=cms,
+        file_name="topwear_cms_upload.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    downloads[1].download_button(
+        "Download separate Topwear QC report",
+        data=qc,
+        file_name="topwear_qc_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 def image_downloader_page() -> None:
@@ -883,11 +1209,12 @@ def job_history_page() -> None:
 
     if phase5:
         _show_topwear_results(database, selected_id)
+        _show_topwear_review(database, selected_id)
 
     st.subheader("Artifacts")
     artifacts = database.list_artifacts(selected_id)
     if not artifacts:
-        st.info("No output artifact exists; Phase 5 does not generate CMS exports.")
+        st.info("No output artifact exists yet; complete Phase 6 review and catalog generation.")
     artifact_root = (ROOT / "data" / "artifacts").resolve()
     for artifact in artifacts:
         st.write(f"{artifact.kind}: {artifact.path}")

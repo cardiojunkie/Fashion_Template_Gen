@@ -19,7 +19,7 @@ from fashion_cms.variant_service import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 JOB_STATUSES = tuple(status.value for status in JobStatus)
 ITEM_STATUSES = tuple(status.value for status in WorkItemStatus)
 ANALYSIS_MODES = tuple(mode.value for mode in AnalysisMode)
@@ -226,7 +226,20 @@ MIGRATION_1 = (
 MIGRATION_2 = (
     "ALTER TABLE work_items ADD COLUMN request_metadata_json TEXT",
 )
-MIGRATIONS = (MIGRATION_1, MIGRATION_2)
+MIGRATION_3 = (
+    """
+    CREATE TABLE review_decisions (
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        sku TEXT NOT NULL,
+        header TEXT NOT NULL,
+        decision_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, sku, header),
+        FOREIGN KEY (job_id, sku) REFERENCES job_rows(job_id, sku) ON DELETE CASCADE
+    )
+    """,
+)
+MIGRATIONS = (MIGRATION_1, MIGRATION_2, MIGRATION_3)
 
 
 def _now() -> str:
@@ -837,6 +850,54 @@ class JobDatabase:
         if item.result_ref != f"cache:{item.cache_key}":
             return None
         return self.get_cached_result(item.cache_key, item.cache_payload_json)
+
+    def save_review_decision(
+        self,
+        job_id: str,
+        sku: str,
+        header: str,
+        decision: Mapping[str, object],
+    ) -> None:
+        if not sku or not header:
+            raise ValueError("Review decisions require a SKU and attribute header.")
+        now = _now()
+        with self.connection() as connection, connection:
+            if connection.execute(
+                "SELECT 1 FROM job_rows WHERE job_id = ? AND sku = ?",
+                (job_id, sku),
+            ).fetchone() is None:
+                raise InvalidJobEdit("Review decision SKU does not belong to the job.")
+            connection.execute(
+                """
+                INSERT INTO review_decisions (
+                    job_id, sku, header, decision_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (job_id, sku, header) DO UPDATE SET
+                    decision_json = excluded.decision_json,
+                    updated_at = excluded.updated_at
+                """,
+                (job_id, sku, header, _json(decision), now),
+            )
+            connection.execute(
+                "UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id)
+            )
+
+    def load_review_decisions(
+        self, job_id: str
+    ) -> dict[tuple[str, str], dict[str, object]]:
+        self.get_job(job_id)
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT sku, header, decision_json
+                FROM review_decisions WHERE job_id = ? ORDER BY sku, header
+                """,
+                (job_id,),
+            ).fetchall()
+        return {
+            (row["sku"], row["header"]): json.loads(row["decision_json"])
+            for row in rows
+        }
 
     def list_job_summaries(self) -> tuple[JobSummary, ...]:
         with self.connection() as connection:
