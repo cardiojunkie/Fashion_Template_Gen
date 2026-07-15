@@ -54,6 +54,15 @@ Every extractable definition uses one policy: `SYSTEM_COPY`, `EXPLICIT_TEXT_ONLY
 - Gender, age group, season, occasion, and comfort require input evidence or an approved deterministic rule; never infer them from a human model's appearance.
 - Unsupported values are internally `unknown` and export as blank, never as invented placeholders.
 
+For Topwear color extraction, an explicitly supplied product-data color always wins. Vision must
+not replace it, refine it to a more specific shade, or mark it as image-inferred; an apparent image
+conflict retains the supplied value and creates a review warning. When color is absent, vision may
+use only an approved broad registry value such as Blue, Red, White, Black, Green, Grey, or Brown.
+A visually proposed nuanced shade must map through an approved broad alias or remain unknown; it
+must never create a registry value. Broad image-derived color retains image provenance and a review
+flag so Phase 6 can highlight the populated cell. Size is never inferred from garment proportions
+or a person wearing the garment.
+
 ## Normalization and output
 
 Code owns final CMS values. Match in this order: exact canonical value, Unicode/case/whitespace/punctuation-normalized canonical value, approved alias, optional review-only fuzzy suggestion, then blank plus review flag. Never silently add a model-proposed value.
@@ -138,4 +147,3 @@ Build a manually checked golden set before broad rollout: at least ten Topwear b
 Track canonical precision, evidence-supported coverage, unsupported-claim rate, blank rate, variant leakage, conflict detection, image association, workbook validation, request count, latency, and cost. Prefer precision over artificial coverage.
 
 Auto-accept only when evidence policy permits it, the canonical value is valid, no higher-priority source conflicts, and an approved rule allows it. Model confidence alone never qualifies.
-

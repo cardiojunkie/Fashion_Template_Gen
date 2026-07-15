@@ -1,0 +1,102 @@
+{
+  "fixture_version": "1",
+  "cases": [
+    {
+      "id": "solid_black_tshirt",
+      "rows": [{"row_number": 2, "sku": "SOLID-1", "base_code": "SOLID", "model_code_input_data": "Product type: T-shirt; Color: Black; Pattern: Solid"}],
+      "images": [{"sku": "SOLID-1", "ordinal": 1, "rgb": [20, 20, 20]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:SOLID", "representative_sku": "SOLID-1", "image_ids": ["SOLID-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "SOLID-1", "observations": [{"header": "attributes__product_type", "raw_value": "T-shirt", "canonical_value": "T-shirt", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SOLID-1"], "confidence": "high", "normalization_rule": null, "note": "Explicit product type."}, {"header": "attributes__color", "raw_value": "Black", "canonical_value": "Black", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SOLID-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__pattern", "raw_value": "Solid", "canonical_value": "Solid", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SOLID-1"], "confidence": "high", "normalization_rule": null, "note": "Explicit pattern."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "SOLID-1", "header": "attributes__color", "canonical_value": "Black"}, {"sku": "SOLID-1", "header": "attributes__pattern", "canonical_value": "Solid"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "graphic_white_tshirt",
+      "rows": [{"row_number": 2, "sku": "GRAPHIC-1", "base_code": "GRAPHIC", "model_code_input_data": "Product type: T-shirt; Color: White"}],
+      "images": [{"sku": "GRAPHIC-1", "ordinal": 1, "rgb": [245, 245, 245]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:GRAPHIC", "representative_sku": "GRAPHIC-1", "image_ids": ["GRAPHIC-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "GRAPHIC-1", "observations": [{"header": "attributes__color", "raw_value": "White", "canonical_value": "White", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:GRAPHIC-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__pattern", "raw_value": "Graphic", "canonical_value": "Graphic", "status": "observed", "evidence_type": "image", "evidence_refs": ["GRAPHIC-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible graphic."}, {"header": "attributes__design", "raw_value": "Graphic print", "canonical_value": "Graphic print", "status": "observed", "evidence_type": "image", "evidence_refs": ["GRAPHIC-1-1"], "confidence": "medium", "normalization_rule": null, "note": "Visible design."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "GRAPHIC-1", "header": "attributes__color", "canonical_value": "White"}, {"sku": "GRAPHIC-1", "header": "attributes__pattern", "canonical_value": "Graphic"}], "unknown_headers": ["attributes__fabric"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "striped_blue_shirt",
+      "rows": [{"row_number": 2, "sku": "STRIPE-1", "base_code": "STRIPE", "model_code_input_data": "Product type: Shirt; Color: Blue"}],
+      "images": [{"sku": "STRIPE-1", "ordinal": 1, "rgb": [30, 90, 180]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:STRIPE", "representative_sku": "STRIPE-1", "image_ids": ["STRIPE-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "STRIPE-1", "observations": [{"header": "attributes__color", "raw_value": "Blue", "canonical_value": "Blue", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:STRIPE-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__pattern", "raw_value": "Striped", "canonical_value": "Striped", "status": "observed", "evidence_type": "image", "evidence_refs": ["STRIPE-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible stripes."}, {"header": "attributes__pattern_type", "raw_value": "Vertical stripes", "canonical_value": "Vertical stripes", "status": "observed", "evidence_type": "image", "evidence_refs": ["STRIPE-1-1"], "confidence": "medium", "normalization_rule": null, "note": "Visible stripe direction."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "STRIPE-1", "header": "attributes__color", "canonical_value": "Blue"}, {"sku": "STRIPE-1", "header": "attributes__pattern", "canonical_value": "Striped"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "textured_green_top",
+      "rows": [{"row_number": 2, "sku": "TEXTURE-1", "base_code": "TEXTURE", "model_code_input_data": "Product type: Top; Color: Green"}],
+      "images": [{"sku": "TEXTURE-1", "ordinal": 1, "rgb": [35, 130, 70]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:TEXTURE", "representative_sku": "TEXTURE-1", "image_ids": ["TEXTURE-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "TEXTURE-1", "observations": [{"header": "attributes__color", "raw_value": "Green", "canonical_value": "Green", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:TEXTURE-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__design", "raw_value": "Textured", "canonical_value": "Textured", "status": "observed", "evidence_type": "image", "evidence_refs": ["TEXTURE-1-1"], "confidence": "medium", "normalization_rule": null, "note": "Visible surface texture."}, {"header": "attributes__pattern", "raw_value": "Solid", "canonical_value": "Solid", "status": "observed", "evidence_type": "image", "evidence_refs": ["TEXTURE-1-1"], "confidence": "medium", "normalization_rule": null, "note": "Single-color appearance."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "TEXTURE-1", "header": "attributes__color", "canonical_value": "Green"}, {"sku": "TEXTURE-1", "header": "attributes__design", "canonical_value": "Textured"}], "unknown_headers": ["attributes__fabric"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "long_sleeve_button_cuffs",
+      "rows": [{"row_number": 2, "sku": "CUFF-1", "base_code": "CUFF", "model_code_input_data": "Product type: Shirt; Color: Brown"}],
+      "images": [{"sku": "CUFF-1", "ordinal": 1, "rgb": [110, 70, 45]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:CUFF", "representative_sku": "CUFF-1", "image_ids": ["CUFF-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "CUFF-1", "observations": [{"header": "attributes__color", "raw_value": "Brown", "canonical_value": "Brown", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:CUFF-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__sleeve_length", "raw_value": "Long sleeve", "canonical_value": "Long sleeve", "status": "observed", "evidence_type": "image", "evidence_refs": ["CUFF-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible sleeve length."}, {"header": "attributes__cuff_type", "raw_value": "Button cuff", "canonical_value": "Button cuff", "status": "observed", "evidence_type": "image", "evidence_refs": ["CUFF-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible cuff."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "CUFF-1", "header": "attributes__sleeve_length", "canonical_value": "Long sleeve"}, {"sku": "CUFF-1", "header": "attributes__cuff_type", "canonical_value": "Button cuff"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "zip_hoodie",
+      "rows": [{"row_number": 2, "sku": "ZIP-1", "base_code": "ZIP", "model_code_input_data": "Product type: Hoodie; Color: Black"}],
+      "images": [{"sku": "ZIP-1", "ordinal": 1, "rgb": [25, 25, 25]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:ZIP", "representative_sku": "ZIP-1", "image_ids": ["ZIP-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "ZIP-1", "observations": [{"header": "attributes__color", "raw_value": "Black", "canonical_value": "Black", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:ZIP-1"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__closure", "raw_value": "Zip", "canonical_value": "Zip", "status": "observed", "evidence_type": "image", "evidence_refs": ["ZIP-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible closure."}, {"header": "attributes__fastening_type", "raw_value": "Zip", "canonical_value": "Zip", "status": "observed", "evidence_type": "image", "evidence_refs": ["ZIP-1-1"], "confidence": "high", "normalization_rule": null, "note": "Visible fastening."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "ZIP-1", "header": "attributes__closure", "canonical_value": "Zip"}, {"sku": "ZIP-1", "header": "attributes__fastening_type", "canonical_value": "Zip"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "size_only_black_tee_group",
+      "rows": [{"row_number": 2, "sku": "SIZE-S", "base_code": "SIZE", "model_code_input_data": "Product type: T-shirt; Color: Black; Size: S"}, {"row_number": 3, "sku": "SIZE-M", "base_code": "SIZE", "model_code_input_data": "Product type: T-shirt; Color: Black; Size: M"}],
+      "images": [{"sku": "SIZE-S", "ordinal": 1, "rgb": [20, 20, 20]}, {"sku": "SIZE-M", "ordinal": 1, "rgb": [20, 20, 20]}],
+      "analysis_mode": "BASE_CODE_SIZE_ONLY",
+      "representative_sku": "SIZE-S",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "BASE_CODE_SIZE_ONLY", "group_key": "base:SIZE", "representative_sku": "SIZE-S", "image_ids": ["SIZE-S-1"], "shared_attributes": [{"header": "attributes__product_type", "raw_value": "T-shirt", "canonical_value": "T-shirt", "status": "observed", "evidence_type": "image", "evidence_refs": ["SIZE-S-1"], "confidence": "high", "normalization_rule": null, "note": "Representative image."}], "sku_attributes": [{"sku": "SIZE-S", "observations": [{"header": "attributes__color", "raw_value": "Black", "canonical_value": "Black", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SIZE-S"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__size", "raw_value": "S", "canonical_value": "S", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SIZE-S"], "confidence": "high", "normalization_rule": null, "note": "Explicit size."}]}, {"sku": "SIZE-M", "observations": [{"header": "attributes__color", "raw_value": "Black", "canonical_value": "Black", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SIZE-M"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}, {"header": "attributes__size", "raw_value": "M", "canonical_value": "M", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:SIZE-M"], "confidence": "high", "normalization_rule": null, "note": "Explicit size."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "SIZE-S", "header": "attributes__size", "canonical_value": "S"}, {"sku": "SIZE-M", "header": "attributes__size", "canonical_value": "M"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "red_blue_variants_per_sku",
+      "rows": [{"row_number": 2, "sku": "COLOR-R", "base_code": "COLOR", "model_code_input_data": "Color: Red; Product type: T-shirt"}, {"row_number": 3, "sku": "COLOR-B", "base_code": "COLOR", "model_code_input_data": "Color: Blue; Product type: T-shirt"}],
+      "images": [{"sku": "COLOR-R", "ordinal": 1, "rgb": [200, 25, 25]}, {"sku": "COLOR-B", "ordinal": 1, "rgb": [25, 75, 190]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:COLOR", "representative_sku": "COLOR-R", "image_ids": ["COLOR-R-1"], "shared_attributes": [], "sku_attributes": [{"sku": "COLOR-R", "observations": [{"header": "attributes__color", "raw_value": "Red", "canonical_value": "Red", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:COLOR-R"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}]}], "warnings": [], "conflicts": []}, {"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:COLOR", "representative_sku": "COLOR-B", "image_ids": ["COLOR-B-1"], "shared_attributes": [], "sku_attributes": [{"sku": "COLOR-B", "observations": [{"header": "attributes__color", "raw_value": "Blue", "canonical_value": "Blue", "status": "explicit", "evidence_type": "input", "evidence_refs": ["input:COLOR-B"], "confidence": "high", "normalization_rule": null, "note": "Supplied color."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 2, "accepted": [{"sku": "COLOR-R", "header": "attributes__color", "canonical_value": "Red"}, {"sku": "COLOR-B", "header": "attributes__color", "canonical_value": "Blue"}], "unknown_headers": ["attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    },
+    {
+      "id": "broad_visual_blue",
+      "rows": [{"row_number": 2, "sku": "BROAD-1", "base_code": "BROAD", "model_code_input_data": "Crew-neck top"}],
+      "images": [{"sku": "BROAD-1", "ordinal": 1, "rgb": [25, 80, 190]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:BROAD", "representative_sku": "BROAD-1", "image_ids": ["BROAD-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "BROAD-1", "observations": [{"header": "attributes__color", "raw_value": "Blue", "canonical_value": "Blue", "status": "observed", "evidence_type": "image", "evidence_refs": ["BROAD-1-1"], "confidence": "medium", "normalization_rule": null, "note": "Broad visible color."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "BROAD-1", "header": "attributes__color", "canonical_value": "Blue"}], "unknown_headers": ["attributes__size"], "warnings_contain": ["Color inferred from image using broad value: Blue"], "conflicts_contain": []}
+    },
+    {
+      "id": "supplied_red_visual_blue_conflict",
+      "rows": [{"row_number": 2, "sku": "CONFLICT-1", "base_code": "CONFLICT", "model_code_input_data": "Color: Red; Product type: Top"}],
+      "images": [{"sku": "CONFLICT-1", "ordinal": 1, "rgb": [25, 80, 190]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:CONFLICT", "representative_sku": "CONFLICT-1", "image_ids": ["CONFLICT-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "CONFLICT-1", "observations": [{"header": "attributes__color", "raw_value": "Blue", "canonical_value": "Blue", "status": "conflict", "evidence_type": "image", "evidence_refs": ["CONFLICT-1-1"], "confidence": "high", "normalization_rule": null, "note": "Image differs from supplied color."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [{"sku": "CONFLICT-1", "header": "attributes__color", "canonical_value": "Red"}], "unknown_headers": ["attributes__material"], "warnings_contain": ["Supplied color Red conflicts with image evidence"], "conflicts_contain": ["Supplied color Red conflicts with image evidence"]}
+    },
+    {
+      "id": "ambiguous_fabric",
+      "rows": [{"row_number": 2, "sku": "FABRIC-1", "base_code": "FABRIC", "model_code_input_data": "Plain top with no composition data"}],
+      "images": [{"sku": "FABRIC-1", "ordinal": 1, "rgb": [150, 150, 150]}],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:FABRIC", "representative_sku": "FABRIC-1", "image_ids": ["FABRIC-1-1"], "shared_attributes": [], "sku_attributes": [{"sku": "FABRIC-1", "observations": [{"header": "attributes__material", "raw_value": "100% cotton", "canonical_value": "100% cotton", "status": "observed", "evidence_type": "image", "evidence_refs": ["FABRIC-1-1"], "confidence": "low", "normalization_rule": null, "note": "Appearance only."}]}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [], "unknown_headers": ["attributes__material", "attributes__fabric"], "warnings_contain": ["attributes__material ignored because its evidence policy was not satisfied"], "conflicts_contain": []}
+    },
+    {
+      "id": "missing_data_and_images",
+      "rows": [{"row_number": 2, "sku": "MISSING-1", "base_code": "MISSING", "model_code_input_data": null}],
+      "images": [],
+      "analysis_mode": "PER_SKU",
+      "fake_structured_responses": [{"attribute_set_id": "topwear", "product_profile": "topwear_mvp", "analysis_mode": "PER_SKU", "group_key": "base:MISSING", "representative_sku": "MISSING-1", "image_ids": [], "shared_attributes": [], "sku_attributes": [{"sku": "MISSING-1", "observations": []}], "warnings": [], "conflicts": []}],
+      "expected": {"request_count": 1, "accepted": [], "unknown_headers": ["attributes__color", "attributes__size", "attributes__material"], "warnings_contain": [], "conflicts_contain": []}
+    }
+  ]
+}

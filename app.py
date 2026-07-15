@@ -19,8 +19,25 @@ from fashion_cms.image_downloader import (
 )
 from fashion_cms.image_service import open_oriented_image, parse_uploaded_images
 from fashion_cms.jobs import JobService
-from fashion_cms.models import AnalysisMode, JobStatus, Severity, ValidationIssue
+from fashion_cms.llm_service import LLMSettings, OpenAIResponsesClient
+from fashion_cms.models import (
+    AnalysisMode,
+    JobStatus,
+    Severity,
+    UploadedImage,
+    ValidationIssue,
+    WorkItemStatus,
+)
 from fashion_cms.registry import load_registry
+from fashion_cms.topwear_extraction import (
+    PROMPT_VERSION as TOPWEAR_PROMPT_VERSION,
+    SCHEMA_VERSION as TOPWEAR_SCHEMA_VERSION,
+    TOPWEAR_PROFILE_ID,
+    ExtractionRecord,
+    cached_item_keys,
+    fake_topwear_client,
+    run_topwear_job,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -49,8 +66,9 @@ def _source_digest(
     workbook: bytes,
     images: tuple[tuple[str, bytes], ...],
     attribute_set: str,
+    configuration: str = "",
 ) -> str:
-    digest = sha256(attribute_set.encode())
+    digest = sha256(f"{attribute_set}\0{configuration}".encode())
     digest.update(len(workbook).to_bytes(8, "big"))
     digest.update(workbook)
     for name, content in images:
@@ -94,6 +112,26 @@ def cms_workbook_page() -> None:
         tuple(registry.mappings_by_set),
         format_func=lambda set_id: set_names[set_id],
     )
+    try:
+        llm_settings = LLMSettings.from_env()
+        settings_error = None
+    except ValueError as exc:
+        llm_settings = LLMSettings()
+        settings_error = str(exc)
+    execution_mode = "Planning only"
+    if attribute_set == "topwear":
+        st.info("Phase 5 Topwear MVP · extraction is read-only; CMS copy and export are not generated.")
+        execution_mode = st.radio(
+            "Extraction client",
+            ("Fake (offline)", "OpenAI Responses API (live)"),
+            horizontal=True,
+        )
+        if settings_error:
+            st.error(settings_error)
+        elif execution_mode.endswith("(live)") and not llm_settings.enabled:
+            st.info(llm_settings.disabled_reason)
+    else:
+        st.info("Phase 5 extraction is available only when the Topwear attribute set is selected.")
     workbook_upload = st.file_uploader("Input workbook", type=["xlsx"])
     image_uploads = st.file_uploader(
         "Product images or ZIP files",
@@ -160,7 +198,23 @@ def cms_workbook_page() -> None:
             file_name=f"cms_{attribute_set}_blank.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        digest = _source_digest(workbook_content, image_upload_data, attribute_set)
+        configuration = "|".join(
+            (
+                execution_mode,
+                TOPWEAR_PROFILE_ID if attribute_set == "topwear" else "",
+                (
+                    "phase5-fake"
+                    if execution_mode == "Fake (offline)"
+                    else llm_settings.model or "unconfigured"
+                ),
+                llm_settings.image_detail,
+                TOPWEAR_PROMPT_VERSION if attribute_set == "topwear" else "",
+                TOPWEAR_SCHEMA_VERSION if attribute_set == "topwear" else "",
+            )
+        )
+        digest = _source_digest(
+            workbook_content, image_upload_data, attribute_set, configuration
+        )
         if st.session_state.get(CMS_SOURCE_DIGEST_STATE) != digest:
             st.session_state[CMS_SOURCE_DIGEST_STATE] = digest
             st.session_state.pop(CMS_JOB_STATE, None)
@@ -170,15 +224,36 @@ def cms_workbook_page() -> None:
             st.subheader("Variant analysis job")
             st.caption(
                 "Creating a job stores normalized rows, image metadata, and hashes. "
-                "No API request is made in Phase 4."
+                "Creation never makes an API request."
             )
-            if st.button("Create persistent job", type="primary"):
+            live_unavailable = (
+                execution_mode.endswith("(live)") and not llm_settings.enabled
+            )
+            if st.button(
+                "Create persistent job", type="primary", disabled=live_unavailable
+            ):
                 try:
+                    phase5_options = (
+                        {
+                            "product_profile": TOPWEAR_PROFILE_ID,
+                            "prompt_version": TOPWEAR_PROMPT_VERSION,
+                            "schema_version": TOPWEAR_SCHEMA_VERSION,
+                            "model_identifier": (
+                                "phase5-fake"
+                                if execution_mode == "Fake (offline)"
+                                else llm_settings.model
+                            ),
+                            "image_detail": llm_settings.image_detail,
+                        }
+                        if attribute_set == "topwear"
+                        else {}
+                    )
                     job_id = JobService(job_database()).create_job(
                         workbook_result.rows,
                         image_result.images,
                         attribute_set=attribute_set,
                         registry_version=registry.fingerprint,
+                        **phase5_options,
                     )
                 except Exception:
                     st.error("The persistent job could not be created safely.")
@@ -187,7 +262,7 @@ def cms_workbook_page() -> None:
                     st.rerun()
         else:
             try:
-                show_job_plan(job_id)
+                show_job_plan(job_id, image_result.images)
             except Exception:
                 st.session_state.pop(CMS_JOB_STATE, None)
                 st.error("The selected job could not be opened. Create or open it again.")
@@ -195,13 +270,19 @@ def cms_workbook_page() -> None:
         st.error("Resolve critical findings before processing or download.")
 
 
-def show_job_plan(job_id: str) -> None:
+def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) -> None:
     database = job_database()
     service = JobService(database)
     job = database.get_job(job_id)
     groups = database.load_groups(job_id)
     items = database.list_work_items(job_id)
     editable = job.status == JobStatus.READY
+    phase5 = (
+        job.attribute_set == "topwear"
+        and job.context.prompt_version == TOPWEAR_PROMPT_VERSION
+        and job.context.schema_version == TOPWEAR_SCHEMA_VERSION
+    )
+    cached_keys = cached_item_keys(database, job_id, registry) if phase5 else frozenset()
 
     st.subheader(f"Variant analysis job · {job_id}")
     st.caption(f"Status: {job.status.value} · selections and work plan are stored in SQLite.")
@@ -288,13 +369,16 @@ def show_job_plan(job_id: str) -> None:
     size_only_count = sum(
         group.analysis_mode == AnalysisMode.BASE_CODE_SIZE_ONLY for group in groups
     )
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("Base-code groups", len(groups))
     metrics[1].metric("SKUs", sum(len(group.skus) for group in groups))
     metrics[2].metric("Size-only groups", size_only_count)
     metrics[3].metric("Per-SKU groups", len(groups) - size_only_count)
     metrics[4].metric("Planned vision requests", len(items))
-    st.caption("This is the exact Phase 4 work plan; no LLM or API request is performed.")
+    metrics[5].metric("Cached / required", f"{len(cached_keys)} / {len(items) - len(cached_keys)}")
+    st.caption(
+        "This exact stored plan is checked again before extraction; cache hits make no API call."
+    )
     st.dataframe(
         [
             {
@@ -307,7 +391,15 @@ def show_job_plan(job_id: str) -> None:
                     if item.analysis_mode == AnalysisMode.BASE_CODE_SIZE_ONLY
                     else ""
                 ),
-                "Status": item.status.value,
+                "Status": (
+                    "CACHED"
+                    if item.status == WorkItemStatus.PENDING and item.key in cached_keys
+                    else (
+                        "REQUEST_REQUIRED"
+                        if item.status == WorkItemStatus.PENDING
+                        else item.status.value
+                    )
+                ),
                 "Cache hit": item.cache_hit,
             }
             for item in items
@@ -315,21 +407,176 @@ def show_job_plan(job_id: str) -> None:
         hide_index=True,
         width="stretch",
     )
-    if job.status == JobStatus.READY and st.button(
-        "Run fake extraction", type="primary", key=f"run_{job_id}"
+    if phase5:
+        _topwear_controls(database, job_id, uploaded_images)
+        _show_topwear_results(database, job_id)
+    else:
+        st.info("Phase 5 extraction is blocked because this stored job is not a Topwear MVP job.")
+
+
+def _topwear_controls(
+    database: JobDatabase,
+    job_id: str,
+    uploaded_images: tuple[UploadedImage, ...],
+) -> None:
+    job = database.get_job(job_id)
+    if job.status not in {
+        JobStatus.READY,
+        JobStatus.RUNNING,
+        JobStatus.PARTIAL_FAILURE,
+        JobStatus.FAILED,
+    }:
+        return
+    fake = job.context.model_identifier == "phase5-fake"
+    retry_failed = job.status in {JobStatus.PARTIAL_FAILURE, JobStatus.FAILED}
+    action = "Retry failed Topwear items" if retry_failed else (
+        "Resume Topwear extraction" if job.status == JobStatus.RUNNING else "Run Topwear extraction"
+    )
+    settings_error = None
+    try:
+        settings = LLMSettings.from_env()
+    except ValueError as exc:
+        settings = LLMSettings()
+        settings_error = str(exc)
+    configured = fake or (
+        settings.enabled
+        and settings.model == job.context.model_identifier
+        and settings.image_detail == job.context.image_detail
+    )
+    confirmed = True
+    if fake:
+        st.caption("Offline fake client selected. No network request or API key is used.")
+    else:
+        if settings_error:
+            st.error(settings_error)
+        elif not configured:
+            st.info(
+                "Live extraction is disabled. Configure the same OPENAI_MODEL and "
+                "OPENAI_IMAGE_DETAIL used when this job was created."
+            )
+        confirmed = st.checkbox(
+            "I confirm this live OpenAI request and the displayed planned request count.",
+            key=f"live_confirm_{job_id}",
+        )
+    if not st.button(
+        action,
+        type="primary",
+        key=f"topwear_run_{job_id}_{job.status.value}",
+        disabled=not configured or not confirmed,
     ):
-        service.run_job(job_id)
-        st.rerun()
-    elif job.status == JobStatus.RUNNING and st.button(
-        "Resume interrupted job", type="primary", key=f"resume_{job_id}"
-    ):
-        service.resume_job(job_id)
-        st.rerun()
-    elif job.status in {JobStatus.PARTIAL_FAILURE, JobStatus.FAILED} and st.button(
-        "Retry failed items", type="primary", key=f"retry_{job_id}"
-    ):
-        service.retry_failed_items(job_id)
-        st.rerun()
+        return
+
+    progress_bar = st.progress(0.0)
+    progress_text = st.empty()
+
+    def update(done: int, total: int, item) -> None:
+        progress_bar.progress(done / total if total else 1.0)
+        progress_text.caption(
+            f"Processed {done} of {total}: {', '.join(item.represented_skus)}"
+        )
+
+    client = fake_topwear_client() if fake else OpenAIResponsesClient(settings)
+    try:
+        with st.spinner("Extracting Topwear observations…"):
+            run_topwear_job(
+                database,
+                job_id,
+                client,
+                uploaded_images,
+                registry,
+                retry_failed=retry_failed,
+                progress=update,
+            )
+    except Exception:
+        st.error("Topwear extraction could not complete safely. Inspect failed work items.")
+    finally:
+        if isinstance(client, OpenAIResponsesClient):
+            client.close()
+    st.rerun()
+
+
+def _show_topwear_results(database: JobDatabase, job_id: str) -> None:
+    items = database.list_work_items(job_id)
+    records = []
+    for item in items:
+        result = database.get_work_item_result(item)
+        if result is None:
+            continue
+        try:
+            records.append((item, ExtractionRecord.model_validate(result)))
+        except Exception:
+            continue
+    if not records and not any(item.status == WorkItemStatus.FAILED for item in items):
+        return
+
+    success = sum(
+        item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+        for item in items
+    )
+    failures = sum(item.status == WorkItemStatus.FAILED for item in items)
+    warnings = sum(len(record.vision_result.warnings) for _, record in records)
+    metrics = st.columns(4)
+    metrics[0].metric("Successful", success)
+    metrics[1].metric("Cached", sum(item.cache_hit for item in items))
+    metrics[2].metric("Failed", failures)
+    metrics[3].metric("Warnings", warnings)
+
+    observations = []
+    messages = []
+    for item, record in records:
+        vision = record.vision_result
+        for observation in vision.shared_attributes:
+            observations.append(
+                {
+                    "Work item": item.position + 1,
+                    "SKU / scope": f"Shared from {vision.representative_sku}",
+                    "Header": observation.header,
+                    "Raw value": observation.raw_value or "",
+                    "Canonical value": observation.canonical_value or "",
+                    "Status": observation.status.value,
+                    "Evidence type": observation.evidence_type.value,
+                    "Evidence references": ", ".join(observation.evidence_refs),
+                    "Confidence": observation.confidence.value if observation.confidence else "",
+                    "Normalization": observation.normalization_rule or "",
+                    "Note": observation.note or "",
+                }
+            )
+        for sku, sku_observations in vision.sku_attributes.items():
+            for observation in sku_observations:
+                observations.append(
+                    {
+                        "Work item": item.position + 1,
+                        "SKU / scope": sku,
+                        "Header": observation.header,
+                        "Raw value": observation.raw_value or "",
+                        "Canonical value": observation.canonical_value or "",
+                        "Status": observation.status.value,
+                        "Evidence type": observation.evidence_type.value,
+                        "Evidence references": ", ".join(observation.evidence_refs),
+                        "Confidence": (
+                            observation.confidence.value if observation.confidence else ""
+                        ),
+                        "Normalization": observation.normalization_rule or "",
+                        "Note": observation.note or "",
+                    }
+                )
+        messages.extend(
+            {"Work item": item.position + 1, "Type": "Warning", "Message": message}
+            for message in vision.warnings
+        )
+        messages.extend(
+            {"Work item": item.position + 1, "Type": "Conflict", "Message": message}
+            for message in vision.conflicts
+        )
+    if observations:
+        st.subheader("Read-only extracted observations and evidence")
+        st.dataframe(observations, hide_index=True, width="stretch")
+    if records:
+        st.subheader("Conflicts and warnings")
+    if messages:
+        st.dataframe(messages, hide_index=True, width="stretch")
+    elif records:
+        st.info("No conflicts or warnings were returned for these work items.")
 
 
 def image_downloader_page() -> None:
@@ -559,6 +806,11 @@ def job_history_page() -> None:
         ),
     )
     job = database.get_job(selected_id)
+    phase5 = (
+        job.attribute_set == "topwear"
+        and job.context.prompt_version == TOPWEAR_PROMPT_VERSION
+        and job.context.schema_version == TOPWEAR_SCHEMA_VERSION
+    )
     groups = database.load_groups(selected_id)
     items = database.list_work_items(selected_id)
     summary = next(summary for summary in jobs if summary.id == selected_id)
@@ -608,10 +860,17 @@ def job_history_page() -> None:
             hide_index=True,
             width="stretch",
         )
-        if st.button("Retry failed items", type="primary", key=f"history_retry_{selected_id}"):
+        if phase5:
+            st.info(
+                "Re-upload the same validated workbook and images in CMS Generator to retry "
+                "Phase 5 safely; image bytes are not stored in SQLite."
+            )
+        elif st.button(
+            "Retry failed items", type="primary", key=f"history_retry_{selected_id}"
+        ):
             service.retry_failed_items(selected_id)
             st.rerun()
-    if job.status in {
+    if not phase5 and job.status in {
         JobStatus.UPLOADED,
         JobStatus.VALIDATING,
         JobStatus.READY,
@@ -622,10 +881,13 @@ def job_history_page() -> None:
         service.resume_job(selected_id)
         st.rerun()
 
+    if phase5:
+        _show_topwear_results(database, selected_id)
+
     st.subheader("Artifacts")
     artifacts = database.list_artifacts(selected_id)
     if not artifacts:
-        st.info("This Phase 4 orchestration job has no completed output artifact.")
+        st.info("No output artifact exists; Phase 5 does not generate CMS exports.")
     artifact_root = (ROOT / "data" / "artifacts").resolve()
     for artifact in artifacts:
         st.write(f"{artifact.kind}: {artifact.path}")

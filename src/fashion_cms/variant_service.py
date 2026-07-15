@@ -229,6 +229,11 @@ _LABEL_RE = re.compile(
     re.I,
 )
 _LABEL_ALIASES = {
+    "attributes color": "color",
+    "attributes size": "size",
+    "attributes pattern": "pattern",
+    "attributes pattern type": "pattern",
+    "attributes product type": "product_type",
     "colour": "color",
     "pattern type": "pattern",
     "product type": "product_type",
@@ -340,6 +345,11 @@ def _labeled_values(texts: Sequence[str]) -> dict[str, set[str]]:
                     _LABELED_VALUE_ALIASES.get((key, value), value)
                 )
     return values
+
+
+def extract_labeled_values(value: str | None) -> dict[str, tuple[str, ...]]:
+    """Return authoritative JSON/label values without treating incidental words as facts."""
+    return {key: tuple(sorted(values)) for key, values in _labeled_values((value or "",)).items()}
 
 
 def _signals(rows: Sequence[InputRow]) -> dict[str, tuple[str, ...] | bool]:
@@ -532,6 +542,10 @@ def build_cache_payload(
     model_code_input_data: Sequence[tuple[str, str | None]],
     image_assets: Sequence[ImageAsset],
     context: CacheContext,
+    representative_sku: str | None = None,
+    row_specific_data: Sequence[
+        tuple[str, str | None, str | None, str | int | float | None]
+    ] = (),
 ) -> dict[str, object]:
     return {
         "analysis_mode": AnalysisMode(analysis_mode).value,
@@ -539,9 +553,19 @@ def build_cache_payload(
         "model_code_input_data": [
             [sku, _normalized_text(value)] for sku, value in model_code_input_data
         ],
+        "row_specific_data": [
+            [
+                sku,
+                _normalized_text(base_code),
+                _normalized_text(ean),
+                _normalized_text(None if shipping_weight is None else str(shipping_weight)),
+            ]
+            for sku, base_code, ean, shipping_weight in row_specific_data
+        ],
         "selected_images": [
             [asset.sku, asset.ordinal, asset.sha256] for asset in image_assets
         ],
+        "representative_sku": representative_sku,
         "attribute_set": context.attribute_set,
         "product_profile": context.product_profile,
         "registry_version": context.registry_version,
@@ -559,6 +583,10 @@ def build_cache_key(
     model_code_input_data: Sequence[tuple[str, str | None]],
     image_assets: Sequence[ImageAsset],
     context: CacheContext,
+    representative_sku: str | None = None,
+    row_specific_data: Sequence[
+        tuple[str, str | None, str | None, str | int | float | None]
+    ] = (),
 ) -> str:
     payload = build_cache_payload(
         analysis_mode=analysis_mode,
@@ -566,6 +594,8 @@ def build_cache_key(
         model_code_input_data=model_code_input_data,
         image_assets=image_assets,
         context=context,
+        representative_sku=representative_sku,
+        row_specific_data=row_specific_data,
     )
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -597,6 +627,16 @@ def build_request_plan(groups: Sequence[VariantGroup], context: CacheContext) ->
                 ),
                 image_assets=selected_images,
                 context=context,
+                representative_sku=representative,
+                row_specific_data=tuple(
+                    (
+                        row.sku,
+                        row.base_code,
+                        row.attributes__lulu_ean,
+                        row.attributes__shipping_weight,
+                    )
+                    for row in relevant_rows
+                ),
             )
             cache_payload_json = json.dumps(
                 cache_payload,

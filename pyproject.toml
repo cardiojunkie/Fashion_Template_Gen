@@ -27,6 +27,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live: opt-in tests that make live external API calls"]
 
 [tool.ruff]
 target-version = "py312"

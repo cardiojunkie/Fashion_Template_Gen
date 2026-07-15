@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from fashion_cms.database import InvalidStateTransition, JobDatabase, JobRecord, WorkItemRecord
+from fashion_cms.llm_service import sanitize_error
 from fashion_cms.models import AnalysisMode, InputRow, JobStatus, UploadedImage, WorkItemStatus
 from fashion_cms.variant_service import (
     CacheContext,
@@ -21,6 +23,10 @@ IMAGE_DETAIL = "auto"
 MAX_ERROR_CHARACTERS = 1_000
 
 Extractor = Callable[[WorkItemRecord], Mapping[str, Any]]
+ResultValidator = Callable[
+    [WorkItemRecord, Mapping[str, object]], Mapping[str, object]
+]
+ProgressCallback = Callable[[int, int, WorkItemRecord], None]
 
 
 def fake_extract(item: WorkItemRecord) -> Mapping[str, Any]:
@@ -37,9 +43,28 @@ def fake_extract(item: WorkItemRecord) -> Mapping[str, Any]:
 
 
 def _safe_error(exc: Exception) -> str:
-    detail = " ".join(str(exc).split())
+    detail = sanitize_error(str(exc), (os.environ.get("OPENAI_API_KEY", ""),))
     message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
     return message[:MAX_ERROR_CHARACTERS]
+
+
+def _safe_request_metadata(value: object, depth: int = 0) -> object:
+    if depth > 4:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return sanitize_error(value, (os.environ.get("OPENAI_API_KEY", ""),))
+    if isinstance(value, Mapping):
+        return {
+            sanitize_error(
+                str(key), (os.environ.get("OPENAI_API_KEY", ""),)
+            )[:100]: _safe_request_metadata(item, depth + 1)
+            for key, item in list(value.items())[:100]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_request_metadata(item, depth + 1) for item in value[:100]]
+    return None
 
 
 class JobService:
@@ -117,6 +142,9 @@ class JobService:
         self,
         job_id: str,
         extractor: Extractor = fake_extract,
+        *,
+        result_validator: ResultValidator | None = None,
+        progress: ProgressCallback | None = None,
     ) -> JobRecord:
         job = self.database.get_job(job_id)
         if job.status == JobStatus.COMPLETED:
@@ -137,12 +165,20 @@ class JobService:
             job_id,
             (WorkItemStatus.PENDING, WorkItemStatus.RUNNING),
         )
-        for item in items:
+        for position, item in enumerate(items, start=1):
             self.database.mark_item_running(job_id, item.key)
             try:
                 cached = self.database.get_cached_result(
                     item.cache_key, item.cache_payload_json
                 )
+                if cached is not None and result_validator is not None:
+                    try:
+                        cached = dict(result_validator(item, cached))
+                    except Exception:
+                        self.database.delete_cached_result(
+                            item.cache_key, item.cache_payload_json
+                        )
+                        cached = None
                 if cached is not None:
                     self.database.complete_item_with_result(
                         item,
@@ -154,6 +190,8 @@ class JobService:
                 result = extractor(item)
                 if not isinstance(result, Mapping):
                     raise TypeError("Fake extractor must return a mapping.")
+                if result_validator is not None:
+                    result = result_validator(item, result)
                 self.database.complete_item_with_result(
                     item,
                     result,
@@ -161,22 +199,48 @@ class JobService:
                     review_required=bool(result.get("review_required")),
                 )
             except Exception as exc:
-                self.database.fail_item(item, _safe_error(exc))
+                metadata = getattr(exc, "request_metadata", None)
+                error = _safe_error(exc)
+                safe_metadata = (
+                    _safe_request_metadata(metadata)
+                    if isinstance(metadata, Mapping)
+                    else None
+                )
+                if isinstance(safe_metadata, dict):
+                    safe_metadata["error"] = error
+                self.database.fail_item(
+                    item,
+                    error,
+                    safe_metadata,
+                )
+            if progress is not None:
+                progress(position, len(items), item)
         return self._finalize(job_id)
 
     def retry_failed_items(
         self,
         job_id: str,
         extractor: Extractor = fake_extract,
+        *,
+        result_validator: ResultValidator | None = None,
+        progress: ProgressCallback | None = None,
     ) -> JobRecord:
         if not self.database.prepare_failed_retry(job_id):
             return self.database.get_job(job_id)
-        return self.run_job(job_id, extractor)
+        return self.run_job(
+            job_id,
+            extractor,
+            result_validator=result_validator,
+            progress=progress,
+        )
 
     def resume_job(
         self,
         job_id: str,
         extractor: Extractor = fake_extract,
+        *,
+        result_validator: ResultValidator | None = None,
+        progress: ProgressCallback | None = None,
     ) -> JobRecord:
         job = self.database.get_job(job_id)
         if job.status == JobStatus.UPLOADED:
@@ -185,7 +249,12 @@ class JobService:
             job = self.database.transition_job(job_id, JobStatus.READY)
         if job.status == JobStatus.READY and not self.database.list_work_items(job_id):
             self.plan_job(job_id)
-        return self.run_job(job_id, extractor)
+        return self.run_job(
+            job_id,
+            extractor,
+            result_validator=result_validator,
+            progress=progress,
+        )
 
     def _finalize(self, job_id: str) -> JobRecord:
         items = self.database.list_work_items(job_id)

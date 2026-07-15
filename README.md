@@ -2,10 +2,14 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 4 adds per-base-code analysis modes, deterministic request plans and cache keys,
-persistent SQLite jobs, failure-only retry, and Job History. Extraction remains a local fake;
-there are no LLM or API calls in this phase. The existing workbook validation, blank CMS
-export, and SSRF-safe 1500 × 1500 image downloader remain available.
+Phase 5 adds a Topwear-only, evidence-aware multimodal extraction MVP. It supports per-SKU
+and size-only base-code analysis, strict Structured Outputs, validated provenance, bounded
+retry, result caching, and a deterministic fake client for offline use. Live extraction calls
+the OpenAI Responses API directly and requires explicit confirmation. It does not yet provide
+editable review, catalog copy, or final CMS exports.
+
+The existing workbook validation, blank CMS export, SSRF-safe 1500 × 1500 image downloader,
+persistent jobs, Attribute Registry, and Job History remain available.
 
 ## Requirements
 
@@ -37,7 +41,8 @@ Do not expose a port publicly while real product data or API keys are in use.
 
 Jobs are stored in `data/fashion_cms.sqlite3` by default so selections and progress survive
 Streamlit reruns and Codespace restarts. The CMS Generator never stores uploaded image bytes in
-the job database; it stores validated metadata and SHA-256 hashes.
+the job database; it stores validated metadata and SHA-256 hashes. Re-upload the same validated
+inputs in CMS Generator when retrying Phase 5 work after a process restart.
 
 Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`. Store SKU, base code, and EAN cells as text. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
 
@@ -47,12 +52,34 @@ so a URL in column C is always saved as `SKU-2.jpg`, even when column B is blank
 Only HTTP/HTTPS URLs resolving to public destinations are fetched. Successful images are
 EXIF-oriented, fitted without default crop/stretch/upscale, and centered on a white canvas.
 
+## Configure Topwear extraction
+
+Fake extraction is selected by default and does not require an API key or internet access. For
+an explicitly confirmed live request, set these server-side environment variables:
+
+```bash
+export OPENAI_API_KEY="your-secret-key"
+export OPENAI_MODEL="your-model-id"
+export OPENAI_IMAGE_DETAIL="high"
+```
+
+`OPENAI_IMAGE_DETAIL` defaults to `high`. The application starts without live credentials and
+disables live extraction with a configuration message. It never displays or stores the API key.
+Use `.env.example` as a name-only reference; do not put a real secret in Git.
+
 ## Verify
 
 ```bash
 python -m pytest
 ruff check .
 python -m fashion_cms.registry config/attribute_registry.xlsx
+```
+
+The default suite uses only the fake client. When credentials are intentionally configured, run
+the smallest opt-in live integration test separately:
+
+```bash
+RUN_LIVE_LLM_TESTS=1 python -m pytest -m live
 ```
 
 ## Maintain the attribute registry

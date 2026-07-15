@@ -19,7 +19,7 @@ from fashion_cms.variant_service import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 JOB_STATUSES = tuple(status.value for status in JobStatus)
 ITEM_STATUSES = tuple(status.value for status in WorkItemStatus)
 ANALYSIS_MODES = tuple(mode.value for mode in AnalysisMode)
@@ -87,6 +87,7 @@ class WorkItemRecord:
     cache_key: str
     cache_payload_json: str
     result_ref: str | None
+    request_metadata: dict[str, object] | None
     cache_hit: bool
     created_at: str
     updated_at: str
@@ -222,7 +223,10 @@ MIGRATION_1 = (
     )
     """,
 )
-MIGRATIONS = (MIGRATION_1,)
+MIGRATION_2 = (
+    "ALTER TABLE work_items ADD COLUMN request_metadata_json TEXT",
+)
+MIGRATIONS = (MIGRATION_1, MIGRATION_2)
 
 
 def _now() -> str:
@@ -668,6 +672,11 @@ class JobDatabase:
             cache_key=row["cache_key"],
             cache_payload_json=row["cache_payload_json"],
             result_ref=row["result_ref"],
+            request_metadata=(
+                json.loads(row["request_metadata_json"])
+                if row["request_metadata_json"]
+                else None
+            ),
             cache_hit=bool(row["cache_hit"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -703,6 +712,17 @@ class JobDatabase:
         result_json = json.dumps(
             result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
+        request_metadata = result.get("request_metadata")
+        request_metadata_json = (
+            json.dumps(
+                request_metadata,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if isinstance(request_metadata, Mapping)
+            else None
+        )
         now = _now()
         status = (
             WorkItemStatus.REVIEW_REQUIRED
@@ -722,12 +742,14 @@ class JobDatabase:
             updated = connection.execute(
                 """
                 UPDATE work_items
-                SET status = ?, error = NULL, result_ref = ?, cache_hit = ?, updated_at = ?
+                SET status = ?, error = NULL, result_ref = ?, request_metadata_json = ?,
+                    cache_hit = ?, updated_at = ?
                 WHERE job_id = ? AND item_key = ? AND status = ?
                 """,
                 (
                     status.value,
                     f"cache:{item.cache_key}",
+                    request_metadata_json,
                     int(cache_hit),
                     now,
                     item.job_id,
@@ -741,17 +763,24 @@ class JobDatabase:
                 "UPDATE jobs SET updated_at = ? WHERE id = ?", (now, item.job_id)
             )
 
-    def fail_item(self, item: WorkItemRecord, error: str) -> None:
+    def fail_item(
+        self,
+        item: WorkItemRecord,
+        error: str,
+        request_metadata: Mapping[str, object] | None = None,
+    ) -> None:
         with self.connection() as connection, connection:
             updated = connection.execute(
                 """
                 UPDATE work_items
-                SET status = ?, error = ?, cache_hit = 0, updated_at = ?
+                SET status = ?, error = ?, request_metadata_json = ?,
+                    cache_hit = 0, updated_at = ?
                 WHERE job_id = ? AND item_key = ? AND status = ?
                 """,
                 (
                     WorkItemStatus.FAILED.value,
                     error,
+                    _json(request_metadata) if request_metadata is not None else None,
                     _now(),
                     item.job_id,
                     item.key,
@@ -796,6 +825,18 @@ class JobDatabase:
                 (cache_key, cache_payload_json),
             ).fetchone()
         return json.loads(row["result_json"]) if row else None
+
+    def delete_cached_result(self, cache_key: str, cache_payload_json: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "DELETE FROM result_cache WHERE cache_key = ? AND cache_payload_json = ?",
+                (cache_key, cache_payload_json),
+            )
+
+    def get_work_item_result(self, item: WorkItemRecord) -> dict[str, object] | None:
+        if item.result_ref != f"cache:{item.cache_key}":
+            return None
+        return self.get_cached_result(item.cache_key, item.cache_payload_json)
 
     def list_job_summaries(self) -> tuple[JobSummary, ...]:
         with self.connection() as connection:

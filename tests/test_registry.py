@@ -81,7 +81,17 @@ def test_committed_registry_has_one_correct_definition_per_header() -> None:
         assert definition.data_type == DataType.GENERATED_TEXT
         assert definition.evidence_policy == EvidencePolicy.GENERATED_CONTENT
 
-    assert all(not values for values in registry.permitted_values_by_header.values())
+    assert registry.permitted_values_by_header["attributes__color"] == (
+        "Blue",
+        "Red",
+        "White",
+        "Black",
+        "Green",
+        "Grey",
+        "Brown",
+    )
+    assert registry.definitions_by_header["attributes__color"].data_type == DataType.ENUM
+    assert set(registry.profiles_by_id) == {("topwear", "topwear_mvp")}
     assert registry.aliases[0].active is False
     assert registry.aliases_by_header == {}
     assert len(registry.fingerprint) == 64
