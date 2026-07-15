@@ -374,6 +374,7 @@ class JobDatabase:
                     "detected_sizes": group.detected_sizes,
                     "detected_patterns": group.detected_patterns,
                     "detected_product_types": group.detected_product_types,
+                    "detected_product_profiles": group.detected_product_profiles,
                     "detected_pack_counts": group.detected_pack_counts,
                     "detected_model_codes": group.detected_model_codes,
                     "size_only_warnings": group.size_only_warnings,

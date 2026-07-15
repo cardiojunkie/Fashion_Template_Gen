@@ -1177,15 +1177,15 @@ Implement and verify one set at a time:
 
 For each set:
 
-- [ ] Validate exact header order.
+- [x] Validate exact header order.
 - [ ] Approve product types and product profiles.
 - [ ] Approve permitted values and aliases.
-- [ ] Assign evidence policies and scope to every unique header.
-- [ ] Create extraction schema/prompt additions without sending irrelevant fields.
+- [x] Assign evidence policies and scope to every unique header.
+- [x] Create extraction schema/prompt additions without sending irrelevant fields.
 - [ ] Create title, name, bullet, and keyword rules.
-- [ ] Add golden fixtures covering size-only and visually varying groups.
-- [ ] Add end-to-end fake-client tests.
-- [ ] Run the entire prior regression suite.
+- [x] Add golden fixtures covering size-only and visually varying groups.
+- [x] Add end-to-end fake-client tests.
+- [x] Run the entire prior regression suite.
 
 ### Explicit conservative fields
 
@@ -1214,12 +1214,12 @@ Only profile-relevant headers are sent to the model.
 
 ### Acceptance criteria
 
-- [ ] All seven attribute sets export their exact Appendix A headers.
+- [x] All seven attribute sets export their exact Appendix A headers.
 - [ ] Every set has approved profiles and registry validation.
-- [ ] Irrelevant accessory fields are not sent for another accessory profile.
-- [ ] Each set has end-to-end tests and representative golden fixtures.
-- [ ] Topwear regression tests still pass.
-- [ ] Full tests and Ruff pass.
+- [x] Irrelevant accessory fields are not sent for another accessory profile.
+- [x] Each set has end-to-end tests and representative golden fixtures.
+- [x] Topwear regression tests still pass.
+- [x] Full tests and Ruff pass.
 
 ### Verification
 

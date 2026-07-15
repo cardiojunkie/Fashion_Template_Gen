@@ -8,10 +8,16 @@ Add Bottomwear, Ethnic Wear, Innerwear & Sleepwear, Footwear, Sports & Activewea
 
 For each set, in the order above:
 
-- [ ] Validate Appendix A order and approve product types/profiles, canonical values, aliases, policies, and scopes.
-- [ ] Extend extraction with only applicable fields and add approved copy rules.
-- [ ] Add golden size-only/visually varying fixtures and fake-client end-to-end tests.
-- [ ] Run the full prior suite before moving to the next set.
+- [x] Validate Appendix A order and add safe technical profiles, policies, and scopes.
+- [x] Extend extraction/review/export with only profile-applicable fields.
+- [x] Add golden size-only/visually varying fixtures and fake-client end-to-end tests.
+- [x] Run registry/header and Topwear regressions in sequence.
+
+Still configuration-dependent for every new set:
+
+- [ ] Approve CMS product types and their profile mappings.
+- [ ] Supply approved set-specific permitted values and aliases.
+- [ ] Approve product-type-specific copy templates and character limits.
 
 Keep exact technical claims explicit-only unless registry-approved evidence says otherwise, including footwear performance/material dimensions, sports elasticity/water resistance, luggage certification/interiors, watch specifications, eyewear technical properties, and all origin/weight/dimension/care/composition fields.
 
@@ -19,10 +25,10 @@ Men's Accessories needs at least `bags_luggage`, `caps_headwear`, `watches`, `ey
 
 ## Acceptance
 
-- [ ] All seven sets export exact headers and have validated approved profiles.
-- [ ] Accessory profiles never receive irrelevant fields.
-- [ ] Every set has representative golden/end-to-end coverage and Topwear still passes.
-- [ ] Full tests and Ruff pass.
+- [x] All seven sets export exact headers and have validated technical profiles.
+- [x] Accessory profiles never receive irrelevant fields.
+- [x] Every set has representative golden/end-to-end coverage and Topwear still passes.
+- [x] Full tests and Ruff pass.
 
 ## Verification
 
@@ -30,4 +36,3 @@ Men's Accessories needs at least `bags_luggage`, `caps_headwear`, `watches`, `ey
 python -m pytest
 ruff check .
 ```
-

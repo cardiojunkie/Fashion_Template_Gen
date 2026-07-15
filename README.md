@@ -2,9 +2,9 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 6 completes the Topwear MVP: evidence-aware extraction flows into canonical normalization,
-persisted review, factual text-only catalog copy, one exact 45-column CMS row per SKU, and a
-separate QC workbook. Live OpenAI calls remain optional and explicitly confirmed; fake extraction
+Phase 7 supports all seven CMS attribute sets through evidence-aware extraction, canonical
+normalization, persisted review, factual text-only catalog copy, exact per-set CMS workbooks, and
+separate QC workbooks. Live OpenAI calls remain optional and explicitly confirmed; fake extraction
 and copy clients keep the default workflow and tests offline.
 
 The existing workbook validation, blank CMS export, SSRF-safe 1500 × 1500 image downloader,
@@ -41,9 +41,14 @@ Do not expose a port publicly while real product data or API keys are in use.
 Jobs are stored in `data/fashion_cms.sqlite3` by default so selections and progress survive
 Streamlit reruns and Codespace restarts. The CMS Generator never stores uploaded image bytes in
 the job database; it stores validated metadata and SHA-256 hashes. Re-upload the same validated
-inputs in CMS Generator when retrying Phase 5 work after a process restart.
+inputs in CMS Generator when retrying extraction after a process restart.
 
-## Review and export Topwear
+## Review and export CMS attribute sets
+
+Select an attribute set and confirm its product profile before extraction. Men's Accessories
+requires an explicit choice among bags/luggage, caps/headwear, watches, eyewear, and other
+accessories; only profile-applicable fields are sent for extraction and all other CMS cells stay
+blank. The selected profile persists with the job and participates in cache invalidation.
 
 After extraction, review each proposed attribute in CMS Generator. You can filter by conflict,
 unmapped/unknown/invalid values, low confidence, image-derived color, completion state, base code,
@@ -52,7 +57,7 @@ decisions persist across reruns and restarts. Unresolved decisions block catalog
 
 Catalog copy uses accepted facts only and sends no images. Code builds the SKU-specific title and
 validates keywords and up to six factual bullets. Unsupported bullet cells remain blank. The final
-CMS download contains only the exact Topwear headers; the separate QC download contains provenance,
+CMS download contains only the exact selected-set headers; the separate QC download contains provenance,
 review actions, warnings, and image-color inference notes. An accepted broad image-derived color is
 yellow in the CMS workbook; supplied or reviewer-edited colors are not.
 
@@ -68,7 +73,7 @@ so a URL in column C is always saved as `SKU-2.jpg`, even when column B is blank
 Only HTTP/HTTPS URLs resolving to public destinations are fetched. Successful images are
 EXIF-oriented, fitted without default crop/stretch/upscale, and centered on a white canvas.
 
-## Configure Topwear extraction and copy
+## Configure extraction and copy
 
 Fake extraction is selected by default and does not require an API key or internet access. For
 an explicitly confirmed live request, set these server-side environment variables:
@@ -104,6 +109,12 @@ Run the Phase 6 upload-to-export path directly with:
 python -m pytest tests/test_topwear_e2e.py
 ```
 
+Run all Phase 7 set/profile checks with:
+
+```bash
+python -m pytest tests/test_attribute_sets.py tests/test_registry.py
+```
+
 ## Maintain the attribute registry
 
 The source of truth is `config/attribute_registry.xlsx`. Edit it with a workbook application while preserving these sheet and column names:
@@ -114,7 +125,7 @@ The source of truth is `config/attribute_registry.xlsx`. Edit it with a workbook
 - `Value_Aliases`: aliases pointing to existing canonical values; inactive rows may hold pending mappings.
 - `Product_Profiles`: approved profile-to-header applicability rules; leave rows empty rather than guessing rules that have not been approved.
 
-Do not add guessed CMS values. Add approved canonical values to `Permitted_Values`, change the header's `data_type` to `ENUM` in both `Attribute_Definitions` and `Permitted_Values`, then activate aliases only when their canonical target exists. Men's Accessories must have the profiles required by `docs/PRODUCT_CONTRACT.md` before that attribute set goes live. Validate the saved workbook with:
+Do not add guessed CMS values. Add approved canonical values to `Permitted_Values`, change the header's `data_type` to `ENUM` in both `Attribute_Definitions` and `Permitted_Values`, then activate aliases only when their canonical target exists. The six Phase 7 sets currently have safe technical routing profiles but no approved CMS product-type mappings or set-specific permitted-value sources; the dashboard reports this configuration-incomplete state. Validate the saved workbook with:
 
 ```bash
 python -m fashion_cms.registry config/attribute_registry.xlsx

@@ -17,7 +17,6 @@ from fashion_cms.catalog_service import (
     KeywordGroup,
     QC_HEADERS,
     SkuCatalog,
-    TOPWEAR_HEADERS,
     build_qc_report,
     build_topwear_title,
     build_topwear_workbook,
@@ -335,7 +334,7 @@ def test_export_has_exact_headers_identifiers_and_color_highlighting(registry) -
     color_column = headers.index("attributes__color") + 1
     brand_column = headers.index("attributes__brand") + 1
 
-    assert headers == TOPWEAR_HEADERS
+    assert headers == registry.mappings_by_set["topwear"]
     assert worksheet.max_row == 3
     assert worksheet.cell(2, 1).value == "0001"
     assert worksheet.cell(2, 3).value == "0000009"
@@ -370,7 +369,7 @@ def test_reviewer_edited_image_color_is_not_marked_as_image_inferred(registry) -
         BytesIO(build_topwear_workbook((row,), (edited,), catalogs, registry)),
         data_only=False,
     )
-    color_column = TOPWEAR_HEADERS.index("attributes__color") + 1
+    color_column = registry.mappings_by_set["topwear"].index("attributes__color") + 1
     assert workbook["CMS Upload"].cell(2, color_column).fill.fill_type is None
     workbook.close()
 
@@ -406,7 +405,7 @@ def test_sku_without_supported_observations_exports_as_a_blank_row(registry) -> 
     assert worksheet.cell(2, 3).value == "0002"
     assert all(
         worksheet.cell(2, column).value is None
-        for column in range(5, len(TOPWEAR_HEADERS) + 1)
+        for column in range(5, len(registry.mappings_by_set["topwear"]) + 1)
     )
     workbook.close()
 

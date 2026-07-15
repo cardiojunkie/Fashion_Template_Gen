@@ -75,7 +75,7 @@ class ValueAlias(RegistryRow):
 
 class ProductProfile(RegistryRow):
     attribute_set_id: str = Field(min_length=1)
-    product_type: str = Field(min_length=1)
+    product_type: str | None = Field(default=None, min_length=1)
     profile_id: str = Field(min_length=1)
     header: str = Field(min_length=1)
     applicable: bool
@@ -94,6 +94,7 @@ class Registry(BaseModel):
     permitted_values_by_header: dict[str, tuple[str, ...]]
     aliases_by_header: dict[str, dict[str, str]]
     profiles_by_id: dict[tuple[str, str], tuple[ProductProfile, ...]]
+    configuration_issues_by_set: dict[str, tuple[str, ...]]
     fingerprint: str
 
 
@@ -143,6 +144,14 @@ GENERATED_HEADERS = {
     "attributes__product_title",
     *(f"attributes__bullet_point_{number}" for number in range(1, 7)),
 }
+MANDATORY_ACCESSORY_PROFILES = (
+    "bags_luggage",
+    "caps_headwear",
+    "watches",
+    "eyewear",
+    "belts_wallets_ties_other",
+)
+PROFILE_EXCLUDED_DATA_TYPES = {DataType.SYSTEM_COPY, DataType.GENERATED_TEXT}
 
 
 def normalize_value(value: str) -> str:
@@ -198,7 +207,11 @@ def _parse_permitted_values(
     for row_number, row in rows:
         raw_values = [row.get(column) for column in value_columns]
         first_blank = next(
-            (index for index, value in enumerate(raw_values) if value is None or not str(value).strip()),
+            (
+                index
+                for index, value in enumerate(raw_values)
+                if value is None or not str(value).strip()
+            ),
             len(raw_values),
         )
         if any(value is not None and str(value).strip() for value in raw_values[first_blank:]):
@@ -249,10 +262,14 @@ def _validate_registry(
             errors.append(f"Attribute_Sets: {set_id} has inconsistent names")
         duplicate_headers = _duplicates([row.header for row in rows])
         if duplicate_headers:
-            errors.append(f"Attribute_Sets: {set_id} has duplicate headers {sorted(duplicate_headers)}")
+            errors.append(
+                f"Attribute_Sets: {set_id} has duplicate headers {sorted(duplicate_headers)}"
+            )
         positions = [row.position for row in rows]
         if sorted(positions) != list(range(1, len(rows) + 1)):
-            errors.append(f"Attribute_Sets: {set_id} positions must be unique and consecutive from 1")
+            errors.append(
+                f"Attribute_Sets: {set_id} positions must be unique and consecutive from 1"
+            )
 
     duplicate_definitions = _duplicates([row.header for row in definitions])
     if duplicate_definitions:
@@ -308,15 +325,15 @@ def _validate_registry(
         if alias.attribute_header not in definitions_by_header:
             errors.append(f"Value_Aliases: unknown header {alias.attribute_header}")
             continue
-        if not alias.active:
-            continue
         canonical_values = values_by_header.get(alias.attribute_header)
         canonical_keys = (
-            {normalize_value(value) for value in canonical_values.values} if canonical_values else set()
+            {normalize_value(value) for value in canonical_values.values}
+            if canonical_values
+            else set()
         )
         if normalize_value(alias.canonical_value) not in canonical_keys:
             errors.append(
-                f"Value_Aliases: active alias {alias.alias!r} points to missing canonical value "
+                f"Value_Aliases: alias {alias.alias!r} points to missing canonical value "
                 f"{alias.canonical_value!r}"
             )
     for header, header_aliases in alias_keys.items():
@@ -324,16 +341,103 @@ def _validate_registry(
         if duplicates:
             errors.append(f"Value_Aliases: {header} has duplicate aliases {sorted(duplicates)}")
 
+    profile_rows: dict[tuple[str, str], list[ProductProfile]] = defaultdict(list)
+    seen_profile_headers: set[tuple[str, str, str]] = set()
+    product_type_profiles: dict[tuple[str, str], set[str]] = defaultdict(set)
     for profile in profiles:
         rows = mappings.get(profile.attribute_set_id)
         if rows is None:
             errors.append(f"Product_Profiles: unknown attribute set {profile.attribute_set_id}")
             continue
-        if profile.header not in {row.header for row in rows}:
+        mapped_headers = {row.header for row in rows}
+        if profile.header not in mapped_headers:
             errors.append(
                 f"Product_Profiles: header {profile.header} is not in {profile.attribute_set_id}"
             )
+            continue
+        definition = definitions_by_header.get(profile.header)
+        if definition and definition.data_type in PROFILE_EXCLUDED_DATA_TYPES:
+            errors.append(f"Product_Profiles: {profile.header} cannot be profile-configured")
+
+        normalized_profile_id = normalize_value(profile.profile_id)
+        profile_key = (profile.attribute_set_id, normalized_profile_id)
+        profile_rows[profile_key].append(profile)
+        header_key = (*profile_key, profile.header)
+        if header_key in seen_profile_headers:
+            errors.append(
+                "Product_Profiles: duplicate mapping for "
+                f"{profile.attribute_set_id}/{profile.profile_id}/{profile.header}"
+            )
+        seen_profile_headers.add(header_key)
+        if profile.product_type:
+            product_type_profiles[
+                (profile.attribute_set_id, normalize_value(profile.product_type))
+            ].add(normalized_profile_id)
+
+    for (set_id, normalized_profile_id), rows in profile_rows.items():
+        profile_ids = {row.profile_id for row in rows}
+        if len(profile_ids) != 1:
+            errors.append(
+                f"Product_Profiles: normalized duplicate profile IDs in {set_id}: "
+                f"{sorted(profile_ids)}"
+            )
+        product_types = {
+            normalize_value(row.product_type) if row.product_type else None for row in rows
+        }
+        if len(product_types) != 1:
+            errors.append(
+                f"Product_Profiles: {set_id}/{rows[0].profile_id} has inconsistent product types"
+            )
+        eligible_headers = {
+            row.header
+            for row in mappings[set_id]
+            if (definition := definitions_by_header.get(row.header))
+            and definition.data_type not in PROFILE_EXCLUDED_DATA_TYPES
+        }
+        configured_headers = {row.header for row in rows}
+        missing_headers = sorted(eligible_headers - configured_headers)
+        if missing_headers:
+            errors.append(
+                f"Product_Profiles: {set_id}/{rows[0].profile_id} is missing headers "
+                f"{missing_headers}"
+            )
+
+    for (set_id, product_type), profile_ids in product_type_profiles.items():
+        if len(profile_ids) > 1:
+            errors.append(
+                f"Product_Profiles: {set_id} product type {product_type!r} maps to "
+                "multiple profiles"
+            )
+
+    accessory_profile_ids = {
+        profile.profile_id for profile in profiles if profile.attribute_set_id == "mens_accessories"
+    }
+    missing_accessory_profiles = sorted(set(MANDATORY_ACCESSORY_PROFILES) - accessory_profile_ids)
+    if "mens_accessories" in mappings and missing_accessory_profiles:
+        errors.append(
+            "Product_Profiles: mens_accessories is missing mandatory profiles "
+            f"{missing_accessory_profiles}"
+        )
     return errors
+
+
+def _configuration_issues(
+    mappings_by_set: dict[str, tuple[str, ...]],
+    profiles: list[ProductProfile],
+) -> dict[str, tuple[str, ...]]:
+    rows_by_set = _group_rows(profiles, lambda row: row.attribute_set_id)
+    issues: dict[str, tuple[str, ...]] = {}
+    for set_id in mappings_by_set:
+        set_profiles = rows_by_set.get(set_id, [])
+        messages = []
+        if not set_profiles:
+            messages.append("No technical product profile is configured.")
+        elif not any(profile.product_type for profile in set_profiles):
+            messages.append("Approved CMS product types are absent.")
+        if set_id != "topwear":
+            messages.append("Approved set-specific permitted-value sources are absent.")
+        issues[set_id] = tuple(messages)
+    return issues
 
 
 def load_registry(path: str | Path) -> Registry:
@@ -349,9 +453,7 @@ def load_registry(path: str | Path) -> Registry:
         if missing_sheets:
             raise RegistryValidationError([f"missing sheets {', '.join(missing_sheets)}"])
 
-        tables = {
-            sheet: _table_rows(workbook[sheet], sheet, errors) for sheet in REQUIRED_COLUMNS
-        }
+        tables = {sheet: _table_rows(workbook[sheet], sheet, errors) for sheet in REQUIRED_COLUMNS}
         attribute_sets = _parse_rows(
             AttributeSetRow, tables["Attribute_Sets"], "Attribute_Sets", errors
         )
@@ -389,9 +491,7 @@ def load_registry(path: str | Path) -> Registry:
         set_id: tuple(row.header for row in sorted(rows, key=lambda item: item.position))
         for set_id, rows in _group_rows(attribute_sets, lambda row: row.attribute_set_id).items()
     }
-    permitted_values_by_header = {
-        row.attribute_header: row.values for row in permitted_values
-    }
+    permitted_values_by_header = {row.attribute_header: row.values for row in permitted_values}
     aliases_by_header: dict[str, dict[str, str]] = defaultdict(dict)
     for alias in aliases:
         if not alias.active:
@@ -416,8 +516,42 @@ def load_registry(path: str | Path) -> Registry:
         permitted_values_by_header=permitted_values_by_header,
         aliases_by_header=dict(aliases_by_header),
         profiles_by_id={key: tuple(rows) for key, rows in profiles_by_id.items()},
+        configuration_issues_by_set=_configuration_issues(mappings_by_set, profiles),
         fingerprint=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
+
+
+def profile_ids(registry: Registry, attribute_set_id: str) -> tuple[str, ...]:
+    if attribute_set_id not in registry.mappings_by_set:
+        raise ValueError(f"Unknown attribute set {attribute_set_id!r}.")
+    return tuple(
+        dict.fromkeys(
+            profile.profile_id
+            for profile in registry.profiles
+            if profile.attribute_set_id == attribute_set_id
+        )
+    )
+
+
+def applicable_profile_headers(
+    registry: Registry, attribute_set_id: str, profile_id: str
+) -> tuple[str, ...]:
+    if attribute_set_id not in registry.mappings_by_set:
+        raise ValueError(f"Unknown attribute set {attribute_set_id!r}.")
+    rows = registry.profiles_by_id.get((attribute_set_id, profile_id))
+    if not rows:
+        raise ValueError(f"Unknown profile {attribute_set_id}/{profile_id}.")
+    applicable = {row.header for row in rows if row.applicable}
+    return tuple(
+        header for header in registry.mappings_by_set[attribute_set_id] if header in applicable
+    )
+
+
+def configuration_issues(registry: Registry, attribute_set_id: str) -> tuple[str, ...]:
+    try:
+        return registry.configuration_issues_by_set[attribute_set_id]
+    except KeyError as exc:
+        raise ValueError(f"Unknown attribute set {attribute_set_id!r}.") from exc
 
 
 def _group_rows(rows: list, key: Any) -> dict[Any, list]:

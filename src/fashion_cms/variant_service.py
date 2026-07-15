@@ -53,6 +53,7 @@ class VariantGroup(BaseModel):
     detected_sizes: tuple[str, ...] = ()
     detected_patterns: tuple[str, ...] = ()
     detected_product_types: tuple[str, ...] = ()
+    detected_product_profiles: tuple[str, ...] = ()
     detected_pack_counts: tuple[str, ...] = ()
     detected_model_codes: tuple[str, ...] = ()
     size_only_warnings: tuple[str, ...] = ()
@@ -224,7 +225,8 @@ _MODEL_RE = re.compile(
 _LABEL_RE = re.compile(
     r"(?:^|[;,|\n])\s*"
     r"(color|colour|size|pattern(?:[ _]type)?|product[ _]type|type|"
-    r"pack[ _](?:count|size|quantity)|model(?:[ _]code)?|style[ _]code|"
+    r"pack[ _](?:count|size|quantity)|product[ _]profile|"
+    r"model(?:[ _]code)?|style[ _]code|"
     r"design|sleeve|neckline|closure|finish)\s*[:=]\s*([^;,|\n]+)",
     re.I,
 )
@@ -330,6 +332,7 @@ def _labeled_values(texts: Sequence[str]) -> dict[str, set[str]]:
                 "size",
                 "pattern",
                 "product_type",
+                "product_profile",
                 "pack_count",
                 "model_code",
                 "design",
@@ -352,7 +355,9 @@ def extract_labeled_values(value: str | None) -> dict[str, tuple[str, ...]]:
     return {key: tuple(sorted(values)) for key, values in _labeled_values((value or "",)).items()}
 
 
-def _signals(rows: Sequence[InputRow]) -> dict[str, tuple[str, ...] | bool]:
+def _signals(
+    rows: Sequence[InputRow], selected_profile: str | None = None
+) -> dict[str, tuple[str, ...] | bool]:
     texts = tuple(row.model_code_input_data or "" for row in rows)
     labeled = _labeled_values(texts)
     colors = tuple(
@@ -395,6 +400,7 @@ def _signals(rows: Sequence[InputRow]) -> dict[str, tuple[str, ...] | bool]:
             | labeled.get("product_type", set())
         )
     )
+    product_profiles = tuple(sorted(labeled.get("product_profile", set())))
     sizes = tuple(
         sorted(set(_detected_sizes(texts)) | {value.upper() for value in labeled.get("size", set())})
     )
@@ -436,11 +442,20 @@ def _signals(rows: Sequence[InputRow]) -> dict[str, tuple[str, ...] | bool]:
         ("colors", colors),
         ("patterns", patterns),
         ("product types", product_types),
+        ("product profiles", product_profiles),
         ("pack counts", pack_counts),
         ("model codes", model_codes),
     ):
         if len(values) > 1:
             warnings.append(f"Multiple {label} detected: {', '.join(values)}.")
+    normalized_profile = _comparison_text(selected_profile)
+    if product_profiles and (
+        not normalized_profile or any(value != normalized_profile for value in product_profiles)
+    ):
+        warnings.append(
+            "Product profile conflict: explicit profile data does not match the "
+            "selected job profile."
+        )
     for label, values in visible_differences.items():
         if len(values) > 1:
             warnings.append(f"Multiple {label} values detected: {', '.join(values)}.")
@@ -453,6 +468,7 @@ def _signals(rows: Sequence[InputRow]) -> dict[str, tuple[str, ...] | bool]:
         "detected_sizes": sizes,
         "detected_patterns": patterns,
         "detected_product_types": product_types,
+        "detected_product_profiles": product_profiles,
         "detected_pack_counts": pack_counts,
         "detected_model_codes": model_codes,
         "size_only_warnings": tuple(warnings),
@@ -488,6 +504,7 @@ def build_variant_groups(
     *,
     modes: Mapping[str, AnalysisMode | str] | None = None,
     representatives: Mapping[str, str] | None = None,
+    product_profile: str | None = None,
 ) -> tuple[VariantGroup, ...]:
     assets = tuple(
         image if isinstance(image, ImageAsset) else ImageAsset.from_upload(image)
@@ -529,7 +546,7 @@ def build_variant_groups(
                 analysis_mode=mode,
                 representative_sku=representative,
                 user_selected_representative=selected is not None,
-                **_signals(group_rows),
+                **_signals(group_rows, product_profile),
             )
         )
     return tuple(result)

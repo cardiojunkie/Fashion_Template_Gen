@@ -6,8 +6,8 @@ import streamlit as st
 
 from fashion_cms.database import InvalidJobEdit, InvalidStateTransition, JobDatabase
 from fashion_cms.catalog_service import (
+    build_cms_workbook,
     build_qc_report,
-    build_topwear_workbook,
     fake_catalog_client,
     generate_catalog_batch,
     model_year_schema_warnings,
@@ -35,7 +35,7 @@ from fashion_cms.models import (
     ValidationIssue,
     WorkItemStatus,
 )
-from fashion_cms.registry import load_registry
+from fashion_cms.registry import configuration_issues, load_registry, profile_ids
 from fashion_cms.review import (
     ProposalStatus,
     ReviewAction,
@@ -46,13 +46,15 @@ from fashion_cms.review import (
     unresolved_review_items,
 )
 from fashion_cms.topwear_extraction import (
+    ATTRIBUTE_PROMPT_VERSION,
+    ATTRIBUTE_SCHEMA_VERSION,
     PROMPT_VERSION as TOPWEAR_PROMPT_VERSION,
     SCHEMA_VERSION as TOPWEAR_SCHEMA_VERSION,
-    TOPWEAR_PROFILE_ID,
     ExtractionRecord,
-    cached_item_keys,
-    fake_topwear_client,
-    run_topwear_job,
+    applicable_attribute_headers,
+    cached_attribute_item_keys,
+    fake_attribute_client,
+    run_attribute_job,
 )
 
 
@@ -66,6 +68,25 @@ registry = load_registry(ROOT / "config" / "attribute_registry.xlsx")
 set_names = {
     row.attribute_set_id: row.attribute_set_name for row in registry.attribute_sets
 }
+
+
+def _contract_versions(attribute_set: str) -> tuple[str, str]:
+    return (
+        (TOPWEAR_PROMPT_VERSION, TOPWEAR_SCHEMA_VERSION)
+        if attribute_set == "topwear"
+        else (ATTRIBUTE_PROMPT_VERSION, ATTRIBUTE_SCHEMA_VERSION)
+    )
+
+
+def _fake_model(attribute_set: str) -> str:
+    return "phase5-fake" if attribute_set == "topwear" else "phase7-fake"
+
+
+def _is_extraction_job(job) -> bool:
+    return (
+        job.context.prompt_version,
+        job.context.schema_version,
+    ) == _contract_versions(job.attribute_set)
 
 
 @st.cache_resource
@@ -128,29 +149,52 @@ def cms_workbook_page() -> None:
         tuple(registry.mappings_by_set),
         format_func=lambda set_id: set_names[set_id],
     )
+    profiles = profile_ids(registry, attribute_set)
+    product_profile = st.selectbox(
+        "Product profile",
+        profiles,
+        index=None if attribute_set == "mens_accessories" else 0,
+        placeholder="Select a profile",
+        help="Profiles control which fields are sent for extraction; they are not CMS columns.",
+    )
+    profile_confirmed = attribute_set == "topwear"
+    if product_profile:
+        extraction_headers = applicable_attribute_headers(
+            registry, attribute_set, product_profile
+        )
+        st.caption(
+            f"Extraction-field preview · {len(extraction_headers)} applicable fields · "
+            f"{', '.join(extraction_headers)}"
+        )
+        if attribute_set != "topwear":
+            profile_confirmed = st.checkbox(
+                "Confirm selected product profile",
+                key=f"confirm_profile_{attribute_set}_{product_profile}",
+            )
+    elif attribute_set == "mens_accessories":
+        st.warning("Select and confirm a Men's Accessories profile before extraction.")
+    for issue in configuration_issues(registry, attribute_set):
+        st.warning(f"Configuration incomplete: {issue}")
+
     try:
         llm_settings = LLMSettings.from_env()
         settings_error = None
     except ValueError as exc:
         llm_settings = LLMSettings()
         settings_error = str(exc)
-    execution_mode = "Planning only"
-    if attribute_set == "topwear":
-        st.info(
-            "Phase 6 Topwear MVP · extract, review canonical facts, generate factual copy, "
-            "and export separate CMS and QC workbooks."
-        )
-        execution_mode = st.radio(
-            "Extraction client",
-            ("Fake (offline)", "OpenAI Responses API (live)"),
-            horizontal=True,
-        )
-        if settings_error:
-            st.error(settings_error)
-        elif execution_mode.endswith("(live)") and not llm_settings.enabled:
-            st.info(llm_settings.disabled_reason)
-    else:
-        st.info("Phase 5 extraction is available only when the Topwear attribute set is selected.")
+    st.info(
+        f"{set_names[attribute_set]} · extract, review canonical facts, generate factual copy, "
+        "and export separate CMS and QC workbooks."
+    )
+    execution_mode = st.radio(
+        "Extraction client",
+        ("Fake (offline)", "OpenAI Responses API (live)"),
+        horizontal=True,
+    )
+    if settings_error:
+        st.error(settings_error)
+    elif execution_mode.endswith("(live)") and not llm_settings.enabled:
+        st.info(llm_settings.disabled_reason)
     workbook_upload = st.file_uploader("Input workbook", type=["xlsx"])
     image_uploads = st.file_uploader(
         "Product images or ZIP files",
@@ -220,15 +264,14 @@ def cms_workbook_page() -> None:
         configuration = "|".join(
             (
                 execution_mode,
-                TOPWEAR_PROFILE_ID if attribute_set == "topwear" else "",
+                product_profile or "",
                 (
-                    "phase5-fake"
+                    _fake_model(attribute_set)
                     if execution_mode == "Fake (offline)"
                     else llm_settings.model or "unconfigured"
                 ),
                 llm_settings.image_detail,
-                TOPWEAR_PROMPT_VERSION if attribute_set == "topwear" else "",
-                TOPWEAR_SCHEMA_VERSION if attribute_set == "topwear" else "",
+                *_contract_versions(attribute_set),
             )
         )
         digest = _source_digest(
@@ -249,30 +292,26 @@ def cms_workbook_page() -> None:
                 execution_mode.endswith("(live)") and not llm_settings.enabled
             )
             if st.button(
-                "Create persistent job", type="primary", disabled=live_unavailable
+                "Create persistent job",
+                type="primary",
+                disabled=live_unavailable or not product_profile or not profile_confirmed,
             ):
                 try:
-                    phase5_options = (
-                        {
-                            "product_profile": TOPWEAR_PROFILE_ID,
-                            "prompt_version": TOPWEAR_PROMPT_VERSION,
-                            "schema_version": TOPWEAR_SCHEMA_VERSION,
-                            "model_identifier": (
-                                "phase5-fake"
-                                if execution_mode == "Fake (offline)"
-                                else llm_settings.model
-                            ),
-                            "image_detail": llm_settings.image_detail,
-                        }
-                        if attribute_set == "topwear"
-                        else {}
-                    )
+                    prompt_version, schema_version = _contract_versions(attribute_set)
                     job_id = JobService(job_database()).create_job(
                         workbook_result.rows,
                         image_result.images,
                         attribute_set=attribute_set,
+                        product_profile=product_profile,
                         registry_version=registry.fingerprint,
-                        **phase5_options,
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
+                        model_identifier=(
+                            _fake_model(attribute_set)
+                            if execution_mode == "Fake (offline)"
+                            else llm_settings.model
+                        ),
+                        image_detail=llm_settings.image_detail,
                     )
                 except Exception:
                     st.error("The persistent job could not be created safely.")
@@ -296,25 +335,24 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
     groups = database.load_groups(job_id)
     items = database.list_work_items(job_id)
     editable = job.status == JobStatus.READY
-    phase5 = (
-        job.attribute_set == "topwear"
-        and job.context.prompt_version == TOPWEAR_PROMPT_VERSION
-        and job.context.schema_version == TOPWEAR_SCHEMA_VERSION
-    )
+    extraction_job = _is_extraction_job(job)
     current_registry = job.context.registry_version == registry.fingerprint
     cached_keys = (
-        cached_item_keys(database, job_id, registry)
-        if phase5 and current_registry
+        cached_attribute_item_keys(database, job_id, registry)
+        if extraction_job and current_registry
         else frozenset()
     )
-    if phase5 and not current_registry:
+    if extraction_job and not current_registry:
         st.warning(
             "The active registry changed after extraction. Stored decisions are revalidated; "
             "unchanged extraction cache entries are not reused."
         )
 
     st.subheader(f"Variant analysis job · {job_id}")
-    st.caption(f"Status: {job.status.value} · selections and work plan are stored in SQLite.")
+    st.caption(
+        f"Status: {job.status.value} · profile: {job.product_profile or '(missing)'} · "
+        "selections and work plan are stored in SQLite."
+    )
     bulk_mode = st.selectbox(
         "Bulk analysis mode",
         tuple(AnalysisMode),
@@ -334,6 +372,7 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
                 "Image count": len(group.images),
                 "Detected colors": ", ".join(group.detected_colors),
                 "Detected sizes": ", ".join(group.detected_sizes),
+                "Detected profiles": ", ".join(group.detected_product_profiles),
                 "Warnings": " ".join(group.size_only_warnings),
                 "Mode": group.analysis_mode.value,
                 "Representative SKU": group.representative_sku,
@@ -436,15 +475,15 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
         hide_index=True,
         width="stretch",
     )
-    if phase5:
-        _topwear_controls(database, job_id, uploaded_images)
-        _show_topwear_results(database, job_id)
-        _show_topwear_review(database, job_id)
+    if extraction_job:
+        _attribute_controls(database, job_id, uploaded_images)
+        _show_attribute_results(database, job_id)
+        _show_attribute_review(database, job_id)
     else:
-        st.info("Phase 5 extraction is blocked because this stored job is not a Topwear MVP job.")
+        st.info("Extraction is blocked because this stored job uses an obsolete contract.")
 
 
-def _topwear_controls(
+def _attribute_controls(
     database: JobDatabase,
     job_id: str,
     uploaded_images: tuple[UploadedImage, ...],
@@ -457,10 +496,13 @@ def _topwear_controls(
         JobStatus.FAILED,
     }:
         return
-    fake = job.context.model_identifier == "phase5-fake"
+    attribute_set_name = set_names[job.attribute_set]
+    fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
     retry_failed = job.status in {JobStatus.PARTIAL_FAILURE, JobStatus.FAILED}
-    action = "Retry failed Topwear items" if retry_failed else (
-        "Resume Topwear extraction" if job.status == JobStatus.RUNNING else "Run Topwear extraction"
+    action = f"Retry failed {attribute_set_name} items" if retry_failed else (
+        f"Resume {attribute_set_name} extraction"
+        if job.status == JobStatus.RUNNING
+        else f"Run {attribute_set_name} extraction"
     )
     settings_error = None
     try:
@@ -491,7 +533,7 @@ def _topwear_controls(
     if not st.button(
         action,
         type="primary",
-        key=f"topwear_run_{job_id}_{job.status.value}",
+        key=f"attribute_run_{job_id}_{job.status.value}",
         disabled=not configured or not confirmed,
     ):
         return
@@ -505,10 +547,11 @@ def _topwear_controls(
             f"Processed {done} of {total}: {', '.join(item.represented_skus)}"
         )
 
-    client = fake_topwear_client() if fake else OpenAIResponsesClient(settings)
+    client = fake_attribute_client() if fake else OpenAIResponsesClient(settings)
+    prompt_version, schema_version = _contract_versions(job.attribute_set)
     try:
-        with st.spinner("Extracting Topwear observations…"):
-            run_topwear_job(
+        with st.spinner(f"Extracting {attribute_set_name} observations…"):
+            run_attribute_job(
                 database,
                 job_id,
                 client,
@@ -516,16 +559,21 @@ def _topwear_controls(
                 registry,
                 retry_failed=retry_failed,
                 progress=update,
+                expected_prompt_version=prompt_version,
+                expected_schema_version=schema_version,
             )
     except Exception:
-        st.error("Topwear extraction could not complete safely. Inspect failed work items.")
+        st.error(
+            f"{attribute_set_name} extraction could not complete safely. "
+            "Inspect failed work items."
+        )
     finally:
         if isinstance(client, OpenAIResponsesClient):
             client.close()
     st.rerun()
 
 
-def _show_topwear_results(database: JobDatabase, job_id: str) -> None:
+def _show_attribute_results(database: JobDatabase, job_id: str) -> None:
     items = database.list_work_items(job_id)
     records = []
     for item in items:
@@ -609,25 +657,27 @@ def _show_topwear_results(database: JobDatabase, job_id: str) -> None:
         st.info("No conflicts or warnings were returned for these work items.")
 
 
-def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
+def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
+    job = database.get_job(job_id)
+    attribute_set_name = set_names[job.attribute_set]
     items = database.list_work_items(job_id)
     if not items or any(item.status == WorkItemStatus.FAILED for item in items):
         if any(item.status == WorkItemStatus.FAILED for item in items):
-            st.warning("Phase 6 review and export remain blocked until extraction failures are resolved.")
+            st.warning("Review and export remain blocked until extraction failures are resolved.")
         return
     if any(
         item.status not in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
         for item in items
     ):
-        st.info("Phase 6 review remains blocked until every extraction item finishes.")
+        st.info("Review remains blocked until every extraction item finishes.")
         return
     review_items = load_review_items(database, job_id, registry)
     if not review_items:
         return
     rows = database.load_rows(job_id)
 
-    st.subheader("Topwear attribute review")
-    for warning in model_year_schema_warnings(rows):
+    st.subheader(f"{attribute_set_name} attribute review")
+    for warning in model_year_schema_warnings(rows, attribute_set_name):
         st.warning(warning)
     filters = st.multiselect(
         "Review filters",
@@ -801,8 +851,7 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
     ).hexdigest()
     catalog_state = f"catalog_{job_id}_{decision_digest}"
     catalogs = st.session_state.get(catalog_state)
-    job = database.get_job(job_id)
-    fake = job.context.model_identifier == "phase5-fake"
+    fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
     live_ready = True
     live_confirmed = True
     live_settings = None
@@ -841,6 +890,8 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
                 model=model,
                 keyword_separator=os.environ.get("FASHION_CMS_KEYWORD_SEPARATOR", ", "),
                 groups=database.load_groups(job_id),
+                attribute_set=job.attribute_set,
+                product_profile=job.product_profile,
             )
         except Exception as exc:
             st.error(f"Catalog copy could not be accepted: {exc}")
@@ -855,7 +906,7 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
         st.info("Review is complete. Generate catalog copy to enable final downloads.")
         return
 
-    st.subheader("Accepted Topwear titles and catalog copy")
+    st.subheader(f"Accepted {attribute_set_name} titles and catalog copy")
     st.dataframe(
         [
             {
@@ -874,8 +925,22 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
         width="stretch",
     )
     try:
-        cms = build_topwear_workbook(rows, review_items, catalogs, registry)
-        qc = build_qc_report(review_items, catalogs, rows=rows)
+        cms = build_cms_workbook(
+            rows,
+            review_items,
+            catalogs,
+            registry,
+            attribute_set=job.attribute_set,
+            product_profile=job.product_profile,
+        )
+        qc = build_qc_report(
+            review_items,
+            catalogs,
+            rows=rows,
+            attribute_set=job.attribute_set,
+            product_profile=job.product_profile,
+            configuration_warnings=configuration_issues(registry, job.attribute_set),
+        )
     except Exception as exc:
         st.error(str(exc))
         return
@@ -884,8 +949,8 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
     artifact_root.mkdir(parents=True, exist_ok=True)
     existing = {(artifact.kind, artifact.path) for artifact in database.list_artifacts(job_id)}
     for kind, filename, content in (
-        ("CMS_WORKBOOK", f"{job_id}_topwear_cms.xlsx", cms),
-        ("QC_REPORT", f"{job_id}_topwear_qc.xlsx", qc),
+        ("CMS_WORKBOOK", f"{job_id}_{job.attribute_set}_cms.xlsx", cms),
+        ("QC_REPORT", f"{job_id}_{job.attribute_set}_qc.xlsx", qc),
     ):
         path = artifact_root / filename
         path.write_bytes(content)
@@ -896,15 +961,15 @@ def _show_topwear_review(database: JobDatabase, job_id: str) -> None:
         database.transition_job(job_id, JobStatus.COMPLETED)
     downloads = st.columns(2)
     downloads[0].download_button(
-        "Download CMS-ready Topwear workbook",
+        f"Download CMS-ready {attribute_set_name} workbook",
         data=cms,
-        file_name="topwear_cms_upload.xlsx",
+        file_name=f"{job.attribute_set}_cms_upload.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     downloads[1].download_button(
-        "Download separate Topwear QC report",
+        f"Download separate {attribute_set_name} QC report",
         data=qc,
-        file_name="topwear_qc_report.xlsx",
+        file_name=f"{job.attribute_set}_qc_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -1067,6 +1132,12 @@ def attribute_registry_page() -> None:
                 "Attribute set ID": set_id,
                 "Attribute set": set_names[set_id],
                 "Header count": len(headers),
+                "Profiles": ", ".join(profile_ids(registry, set_id)),
+                "Configuration health": (
+                    "Ready"
+                    if not configuration_issues(registry, set_id)
+                    else "Incomplete: " + " ".join(configuration_issues(registry, set_id))
+                ),
             }
             for set_id, headers in registry.mappings_by_set.items()
         ],
@@ -1079,6 +1150,16 @@ def attribute_registry_page() -> None:
         format_func=lambda set_id: set_names[set_id],
         key="registry_set",
     )
+    for issue in configuration_issues(registry, selected_set):
+        st.warning(f"Configuration incomplete: {issue}")
+    selected_profile = st.selectbox(
+        "Inspect product profile",
+        profile_ids(registry, selected_set),
+        key=f"registry_profile_{selected_set}",
+    )
+    applicable = set(
+        applicable_attribute_headers(registry, selected_set, selected_profile)
+    )
     st.dataframe(
         [
             {
@@ -1089,6 +1170,7 @@ def attribute_registry_page() -> None:
                 "Evidence policy": registry.definitions_by_header[
                     header
                 ].evidence_policy.value,
+                "Sent for extraction": header in applicable,
             }
             for position, header in enumerate(
                 registry.mappings_by_set[selected_set], start=1
@@ -1115,6 +1197,7 @@ def job_history_page() -> None:
                 "Job ID": job.id,
                 "Job type": job.job_type,
                 "Attribute set": job.attribute_set,
+                "Product profile": database.get_job(job.id).product_profile or "",
                 "Created time": job.created_at,
                 "Updated time": job.updated_at,
                 "Overall status": job.status.value,
@@ -1136,11 +1219,7 @@ def job_history_page() -> None:
         ),
     )
     job = database.get_job(selected_id)
-    phase5 = (
-        job.attribute_set == "topwear"
-        and job.context.prompt_version == TOPWEAR_PROMPT_VERSION
-        and job.context.schema_version == TOPWEAR_SCHEMA_VERSION
-    )
+    extraction_job = _is_extraction_job(job)
     groups = database.load_groups(selected_id)
     items = database.list_work_items(selected_id)
     summary = next(summary for summary in jobs if summary.id == selected_id)
@@ -1190,17 +1269,17 @@ def job_history_page() -> None:
             hide_index=True,
             width="stretch",
         )
-        if phase5:
+        if extraction_job:
             st.info(
                 "Re-upload the same validated workbook and images in CMS Generator to retry "
-                "Phase 5 safely; image bytes are not stored in SQLite."
+                "safely; image bytes are not stored in SQLite."
             )
         elif st.button(
             "Retry failed items", type="primary", key=f"history_retry_{selected_id}"
         ):
             service.retry_failed_items(selected_id)
             st.rerun()
-    if not phase5 and job.status in {
+    if not extraction_job and job.status in {
         JobStatus.UPLOADED,
         JobStatus.VALIDATING,
         JobStatus.READY,
@@ -1211,14 +1290,14 @@ def job_history_page() -> None:
         service.resume_job(selected_id)
         st.rerun()
 
-    if phase5:
-        _show_topwear_results(database, selected_id)
-        _show_topwear_review(database, selected_id)
+    if extraction_job:
+        _show_attribute_results(database, selected_id)
+        _show_attribute_review(database, selected_id)
 
     st.subheader("Artifacts")
     artifacts = database.list_artifacts(selected_id)
     if not artifacts:
-        st.info("No output artifact exists yet; complete Phase 6 review and catalog generation.")
+        st.info("No output artifact exists yet; complete review and catalog generation.")
     artifact_root = (ROOT / "data" / "artifacts").resolve()
     for artifact in artifacts:
         st.write(f"{artifact.kind}: {artifact.path}")

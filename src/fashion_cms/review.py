@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -19,6 +18,8 @@ from fashion_cms.topwear_extraction import (
     Confidence,
     EvidenceType,
     ExtractionRecord,
+    applicable_attribute_headers,
+    structured_input_values,
 )
 from fashion_cms.variant_service import VariantGroup, extract_labeled_values
 
@@ -140,12 +141,6 @@ _LABEL_HEADERS = {
     "closure": "attributes__closure",
     "finish": "attributes__finish",
 }
-_KEY_ALIASES = {
-    "colour": "color",
-    "model_code": "model",
-    "style_code": "model",
-    "product_name": "product_type",
-}
 _OVERLAPPING_HEADERS = (
     ("attributes__fit", "attributes__fit_type"),
     ("attributes__pattern", "attributes__pattern_type"),
@@ -169,45 +164,26 @@ def _generic_definition(registry: Registry, header: str) -> bool:
     return description in {label, f"cms output field for {label}"}
 
 
-def _header_for_key(key: str, registry: Registry) -> str | None:
-    if key in registry.definitions_by_header:
-        return key
-    cleaned = normalize_value(key).replace(" ", "_")
-    cleaned = _KEY_ALIASES.get(cleaned, cleaned)
-    candidate = f"attributes__{cleaned}"
-    return candidate if candidate in registry.definitions_by_header else None
-
-
 def _structured_input_candidates(
     row: InputRow, registry: Registry, allowed_headers: set[str]
 ) -> tuple[_Candidate, ...]:
-    try:
-        data = json.loads(row.model_code_input_data or "")
-    except (json.JSONDecodeError, TypeError):
-        return ()
-    if not isinstance(data, dict):
-        return ()
     candidates = []
-    for key, value in data.items():
-        header = _header_for_key(str(key), registry)
-        if (
-            header not in allowed_headers
-            or value is None
-            or isinstance(value, (dict, list, tuple, bool))
-        ):
-            continue
-        raw = str(value).strip()
-        if raw:
-            candidates.append(
-                _Candidate(
-                    header=header,
-                    raw_value=raw,
-                    evidence_type="structured_input",
-                    evidence_references=(f"input:{row.sku}:{header}",),
-                    confidence=Confidence.HIGH,
-                    priority=SourcePriority.STRUCTURED_INPUT,
-                )
+    for header, raw in (
+        structured_input_values(
+            row.model_code_input_data, registry, allowed_headers
+        )
+        or {}
+    ).items():
+        candidates.append(
+            _Candidate(
+                header=header,
+                raw_value=raw,
+                evidence_type="structured_input",
+                evidence_references=(f"input:{row.sku}:{header}",),
+                confidence=Confidence.HIGH,
+                priority=SourcePriority.STRUCTURED_INPUT,
             )
+        )
     return tuple(candidates)
 
 
@@ -256,6 +232,17 @@ def _candidate_from_observation(observation: AttributeObservation) -> _Candidate
 def _shared_safe(header: str, group: VariantGroup | None) -> bool:
     if group is None:
         return True
+    if any(
+        warning.startswith(
+            (
+                "Product profile conflict",
+                "Descriptions differ beyond",
+                "Multiple pack counts",
+            )
+        )
+        for warning in group.size_only_warnings
+    ):
+        return False
     if header == "attributes__color" and len(group.detected_colors) > 1:
         return False
     if header in {"attributes__pattern", "attributes__pattern_type"} and len(
@@ -515,12 +502,24 @@ def build_review_items(
     registry: Registry,
     groups: Sequence[VariantGroup] = (),
     decisions: Mapping[tuple[str, str], Mapping[str, object]] | None = None,
+    attribute_set_id: str | None = None,
+    product_profile: str | None = None,
 ) -> tuple[ReviewItem, ...]:
-    headers = tuple(
-        header
-        for header in registry.mappings_by_set["topwear"]
-        if registry.definitions_by_header[header].data_type
-        not in {DataType.SYSTEM_COPY, DataType.GENERATED_TEXT}
+    if not records:
+        return ()
+    metadata = records[0][1]
+    selected_set = attribute_set_id or metadata.vision_result.attribute_set_id
+    selected_profile = product_profile or metadata.vision_result.product_profile
+    if selected_profile is None:
+        raise ValueError("A product profile is required for review.")
+    if any(
+        record.vision_result.attribute_set_id != selected_set
+        or record.vision_result.product_profile != selected_profile
+        for _, record in records
+    ):
+        raise ValueError("Extraction records do not share one attribute set and profile.")
+    headers = applicable_attribute_headers(
+        registry, selected_set, selected_profile
     )
     allowed_headers = set(headers)
     candidates: dict[tuple[str, str], list[_Candidate]] = defaultdict(list)
@@ -540,9 +539,7 @@ def build_review_items(
         for candidate in row_candidates:
             candidates[(row.sku, candidate.header)].append(candidate)
 
-    metadata = None
     for item, record in records:
-        metadata = record
         group = group_by_key.get(item.group_key)
         for message in record.vision_result.conflicts:
             conflict_headers = [header for header in headers if header in message]
@@ -569,9 +566,6 @@ def build_review_items(
                 candidates[(sku, observation.header)].append(
                     _candidate_from_observation(observation)
                 )
-    if metadata is None:
-        return ()
-
     built = []
     for row in rows:
         for header in headers:
@@ -585,7 +579,7 @@ def build_review_items(
                     header=header,
                     candidates=values,
                     registry=registry,
-                    product_profile=metadata.vision_result.product_profile,
+                    product_profile=selected_profile,
                     prompt_version=metadata.vision_result.prompt_version,
                     schema_version=metadata.vision_result.schema_version,
                     model=metadata.vision_result.model,
@@ -663,6 +657,7 @@ def build_review_items(
 def load_review_items(
     database: JobDatabase, job_id: str, registry: Registry
 ) -> tuple[ReviewItem, ...]:
+    job = database.get_job(job_id)
     records = []
     for item in database.list_work_items(job_id):
         result = database.get_work_item_result(item)
@@ -679,6 +674,8 @@ def load_review_items(
         registry=registry,
         groups=database.load_groups(job_id),
         decisions=database.load_review_decisions(job_id),
+        attribute_set_id=job.attribute_set,
+        product_profile=job.product_profile,
     )
 
 

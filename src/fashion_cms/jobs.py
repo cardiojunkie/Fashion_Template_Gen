@@ -92,6 +92,7 @@ class JobService:
             images,
             modes=modes,
             representatives=representatives,
+            product_profile=product_profile,
         )
         context = CacheContext(
             attribute_set=attribute_set,

@@ -1,0 +1,13 @@
+{
+  "fixture_version": "1",
+  "cases": [
+    {"attribute_set": "bottomwear", "profile": "bottomwear_default", "product_type": "Bottomwear"},
+    {"attribute_set": "ethnic_wear", "profile": "ethnic_wear_default", "product_type": "Ethnic Wear"},
+    {"attribute_set": "inner_sleepwear", "profile": "inner_sleepwear_default", "product_type": "Sleepwear"},
+    {"attribute_set": "footwear", "profile": "footwear_default", "product_type": "Footwear"},
+    {"attribute_set": "sports_activewear", "profile": "sports_activewear_default", "product_type": "Activewear"},
+    {"attribute_set": "mens_accessories", "profile": "bags_luggage", "product_type": "Bag"}
+  ],
+  "size_only": {"base_code": "SIZE", "sizes": ["S", "M"], "color": "Blue"},
+  "visually_varying": {"base_code": "VARIANT", "colors": ["Blue", "Red"], "patterns": ["Solid", "Striped"]}
+}

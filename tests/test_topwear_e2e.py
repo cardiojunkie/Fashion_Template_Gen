@@ -8,7 +8,6 @@ from openpyxl import Workbook, load_workbook
 from PIL import Image
 
 from fashion_cms.catalog_service import (
-    TOPWEAR_HEADERS,
     build_qc_report,
     build_topwear_workbook,
     fake_catalog_client,
@@ -197,7 +196,7 @@ def test_upload_to_review_copy_export_and_qc_end_to_end(tmp_path: Path) -> None:
     reopened = load_workbook(BytesIO(cms), data_only=False)
     worksheet = reopened["CMS Upload"]
     headers = tuple(cell.value for cell in worksheet[1])
-    assert headers == TOPWEAR_HEADERS
+    assert headers == registry.mappings_by_set["topwear"]
     assert worksheet.max_row == 3
     assert [worksheet.cell(row, 1).value for row in (2, 3)] == ["0001-S", "0001-M"]
     assert [worksheet.cell(row, 3).value for row in (2, 3)] == ["00000001", "00000002"]
