@@ -15,6 +15,30 @@ class Severity(StrEnum):
     WARNING = "WARNING"
 
 
+class AnalysisMode(StrEnum):
+    PER_SKU = "PER_SKU"
+    BASE_CODE_SIZE_ONLY = "BASE_CODE_SIZE_ONLY"
+
+
+class JobStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    VALIDATING = "VALIDATING"
+    READY = "READY"
+    RUNNING = "RUNNING"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    COMPLETED = "COMPLETED"
+    PARTIAL_FAILURE = "PARTIAL_FAILURE"
+    FAILED = "FAILED"
+
+
+class WorkItemStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class ValidationIssue(BaseModel):
     model_config = ConfigDict(frozen=True)
 

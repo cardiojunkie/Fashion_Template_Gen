@@ -2,9 +2,10 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 3 provides local workbook/image validation, exact blank CMS workbook export, and an
-SSRF-safe image downloader that creates standardized 1500 × 1500 JPEGs, a flat image ZIP,
-and a separate report. It intentionally contains no job, LLM, or catalog-generation pipeline.
+Phase 4 adds per-base-code analysis modes, deterministic request plans and cache keys,
+persistent SQLite jobs, failure-only retry, and Job History. Extraction remains a local fake;
+there are no LLM or API calls in this phase. The existing workbook validation, blank CMS
+export, and SSRF-safe 1500 × 1500 image downloader remain available.
 
 ## Requirements
 
@@ -21,8 +22,22 @@ python -m pip install -e ".[dev]"
 ## Run
 
 ```bash
-streamlit run app.py
+./start.sh
+./start.sh 8502
+PORT=8503 ./start.sh
+PYTHON_BIN=python3 ./start.sh
 ```
+
+The default port is 8501. In GitHub Codespaces, the application appears in the
+**PORTS** panel; keep the forwarded port private for normal testing. If automatic
+forwarding does not occur, add the selected port manually in the **PORTS** panel.
+Press Ctrl+C to stop the application.
+
+Do not expose a port publicly while real product data or API keys are in use.
+
+Jobs are stored in `data/fashion_cms.sqlite3` by default so selections and progress survive
+Streamlit reruns and Codespace restarts. The CMS Generator never stores uploaded image bytes in
+the job database; it stores validated metadata and SHA-256 hashes.
 
 Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`. Store SKU, base code, and EAN cells as text. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
 
