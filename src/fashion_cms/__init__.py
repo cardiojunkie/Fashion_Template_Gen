@@ -1,0 +1,1 @@
+"""Fashion CMS Upload Generator."""
