@@ -1,33 +1,46 @@
 # Project Status
 
-Current phase: Phase 8 — Evaluation, security, production hardening, and release
-Status: engineering complete; production release blocked on user approval and live evaluation
+Current phase: Phase 8 — retrospective audit and manual UAT preparation
+Status: engineering audit complete; ready for manual UAT; production release blocked
 Release candidate: 0.1.0-rc1 (unpublished)
 Last updated: 2026-07-16
 
 ## Completed
 
-- Added centralized mandatory release gates and dashboard visibility; unresolved gates cannot produce a production-ready verdict.
-- Added a versioned 13-case all-set/all-accessory engineering dataset, deterministic two-model comparison, sample-counted metrics, variant-leakage detection, and safe threshold policy routing.
-- Hardened workbook, ZIP, filename, image, URL, prompt/model-output, secret/error, resource, cleanup, and export boundaries with Phase 8 regression coverage.
-- Added centralized validated limits, request/cost preview and actual usage, persistent hard call accounting, bounded model concurrency/retries, cancellation/resume, successful partial export/QC, safe SQLite backup, and migration/rollback procedures.
-- Added the threat model, security summary, manifests, evaluation report, deployment/user/backup guides, sign-off ledger, release/rollback checklists, and known limitations under `docs/releases/0.1.0-rc1/`.
-- Preserved the exact seven-set CMS contracts, all five Men's Accessories profiles, existing downloader output, fake/offline defaults, and executable `./start.sh`.
+- Audited 140 Phase 1–8 requirements against implementation and verification: 132 PASS, 2 PARTIAL,
+  6 BLOCKED_USER_INPUT, and no remaining FAIL or NOT_IMPLEMENTED rows.
+- Fixed two Major audit defects: missing manual-acceptance artifacts/verifier and a launcher host
+  override that could violate the required `0.0.0.0` bind. No Critical defect was found.
+- Added `docs/RETROSPECTIVE_AUDIT.md`, `docs/AUDIT_FINDINGS.md`, and evidence-backed PLAN checkbox
+  updates while leaving human approval and live-evaluation items unchecked.
+- Added the non-developer `uat/` pack: 13-sheet checklist, seven structural workbooks, negative and
+  image/downloader fixtures, real-product ground-truth template, registry-generated expected
+  headers, pack generator, and read-only CMS export verifier with terminal/JSON reporting.
+- Preserved exact CMS contracts, safe offline fake clients, strict evidence/security boundaries,
+  partial recovery, and existing production blockers.
 
 ## Verification
 
-- Main and clean temporary environments: `317 passed, 1 skipped`; the skip is the explicit opt-in live OpenAI test.
-- `ruff check .`, `git diff --check`, `python -m pip check`, registry validation, release-report validation, `bash -n start.sh`, and executable check: pass.
-- Clean install: `python -m pip install -e ".[dev]"` passed in a new virtual environment.
-- Runtime: `./start.sh 8501` health returned `ok`; Streamlit dashboard rendered with no AppTest exceptions; 95 critical workflow/security smoke tests passed; server stopped cleanly.
+- Main and clean temporary environments: `327 passed, 1 skipped`; the skip is the explicit opt-in
+  live OpenAI test.
+- `ruff check .`, `git diff --check`, `python -m pip check`, registry validation, release-report
+  validation, `bash -n start.sh`, and executable check: pass.
+- Clean install: `python -m pip install -e ".[dev]"` passed in a new temporary virtual environment.
+- Runtime: existing private port 8501 returned `200 ok`; an audit-owned `./start.sh 8502` instance
+  returned `200 ok`, stopped cleanly, and left no listener.
 
 ## Release blockers
 
-- Human approval of representative golden truth for every set/profile.
-- Live comparison of at least two approved models with credentials, approved pricing, and approved thresholds.
-- Final permitted values, semantic field rules, title/copy rules, output format, and retention approval.
-- Approved production host, authentication, HTTPS/reverse-proxy, storage/backup, monitoring, and network-egress configuration.
+- Human approval of representative real-product ground truth for every set/profile.
+- Live comparison of at least two approved models with credentials, approved pricing, and approved
+  thresholds.
+- Final permitted values, semantic field rules, title/copy rules, output format, background mode,
+  and retention approval.
+- Approved production host, authentication, HTTPS/reverse proxy, storage/backup, monitoring, and
+  network-egress configuration.
 
 ## Next action
 
-Review `docs/releases/0.1.0-rc1/USER_SIGNOFF.md`. After approvals and credentials are supplied, run the live evaluation and production-like release checklist; do not deploy, tag, publish, or mark production-ready beforehand.
+Keep port 8501 private, follow `uat/README.md`, and record every result in
+`uat/manual_uat_checklist.xlsx`. Do not deploy, publish, tag, or mark production-ready until manual
+UAT and the user sign-off ledger are complete.

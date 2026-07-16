@@ -50,7 +50,7 @@ def test_positional_port_overrides_port_environment() -> None:
 
 
 def test_port_environment_is_used_without_positional_port() -> None:
-    result = run_script(env={"PORT": "8503"})
+    result = run_script(env={"PORT": "8503", "HOST": "127.0.0.1"})
 
     assert result.returncode == 0
     assert "Local URL: http://localhost:8503" in result.stdout

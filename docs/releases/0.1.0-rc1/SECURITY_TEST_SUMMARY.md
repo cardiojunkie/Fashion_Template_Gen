@@ -1,6 +1,6 @@
 # Security and reliability test summary — 0.1.0-rc1
 
-Default tests are offline. The complete suite passed 317 tests with one explicitly opt-in live OpenAI test skipped.
+Default tests are offline. The complete suite passed 327 tests with one explicitly opt-in live OpenAI test skipped.
 
 - Workbook: type deception, malformed ZIP/XML, encryption, macros, external links, formulas, Excel errors, member/expanded/file/row/column/cell limits, identifiers, and formula-safe export.
 - ZIP/image: traversal, absolute paths, hidden files, symlinks, nesting, flat-name collisions, file/member/expanded limits, magic/extension mismatch, malformed data, decompression/pixel/dimension limits, animation, unsupported modes, EXIF, transparency, CMYK, and deterministic JPEG/ZIP output.

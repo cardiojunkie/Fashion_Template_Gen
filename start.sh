@@ -5,7 +5,6 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 PORT="${1:-${PORT:-8501}}"
-HOST="${HOST:-0.0.0.0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
@@ -29,7 +28,7 @@ if [[ "${CODESPACES:-}" == "true" ]] \
 fi
 
 exec "$PYTHON_BIN" -m streamlit run app.py \
-    --server.address "$HOST" \
+    --server.address 0.0.0.0 \
     --server.port "$PORT" \
     --server.headless true \
     --browser.gatherUsageStats false

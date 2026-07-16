@@ -143,3 +143,6 @@ Restart Streamlit after replacing the workbook. The active header-scoped alias m
 
 Project scope and phase gates live in `PLAN.md`; current progress lives in `docs/STATUS.md`.
 The complete release checklist and operational guides live in `docs/releases/0.1.0-rc1/`.
+Catalog-user acceptance starts with `uat/README.md` and `uat/manual_uat_checklist.xlsx`.
+The UAT pack includes registry-generated expected headers, structural inputs, a real-product
+ground-truth template, and a read-only CMS export verifier; it is not production sign-off.

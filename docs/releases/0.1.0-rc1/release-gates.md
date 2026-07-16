@@ -4,7 +4,7 @@ Verdict: **BLOCKED**. The engineering release candidate is ready for user accept
 
 | Gate group | Status | Evidence or blocker |
 |---|---|---|
-| Tests, lint, registry, exact exports | PASS | 317 tests passed; Ruff and registry validation passed. |
+| Tests, lint, registry, exact exports | PASS | 327 tests passed; Ruff and registry validation passed. |
 | Seven workflows and accessory isolation | PASS | Offline end-to-end and strict applicability checks passed. |
 | Security, recovery, cancellation, backup | PASS | Automated boundary and recovery checks passed. |
 | Evaluation framework and leakage formula | PASS | Deterministic engineering checks passed; not live accuracy evidence. |

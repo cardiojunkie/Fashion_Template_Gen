@@ -866,20 +866,20 @@ Create the minimal runnable repository, persistent agent context, exact attribut
 
 ### Required work
 
-- [ ] Initialize the Python project for Python 3.12.
-- [ ] Add only the dependencies required by this phase.
-- [ ] Create `AGENTS.md`, `README.md`, `.env.example`, `docs/STATUS.md`, `docs/DECISIONS.md`, `docs/PRODUCT_CONTRACT.md`, and focused phase files.
-- [ ] Create a minimal Streamlit app that starts and displays the product name plus phase status.
-- [ ] Create `config/attribute_registry.xlsx` with the five sheets specified in Section 6.
-- [ ] Populate `Attribute_Sets` with every ordered header from Appendix A.
-- [ ] Populate one unique definition row for every unique header.
-- [ ] Mark system-copy and generated fields correctly.
-- [ ] Create empty permitted-value slots for user-supplied values. Do not invent final CMS enums.
-- [ ] Seed the approved alias `A-Line Fit` → `A-Line` for `attributes__fit_type` only if `A-Line` exists in the permitted values; otherwise place it in a clearly reported pending state.
-- [ ] Implement registry loading, normalization, indexing, and validation.
-- [ ] Implement a registry fingerprint/version hash.
-- [ ] Add tests for header order, duplicate detection, missing definitions, invalid aliases, invalid data types, and invalid profiles.
-- [ ] Document how the user updates and reloads the registry workbook.
+- [x] Initialize the Python project for Python 3.12.
+- [x] Add only the dependencies required by this phase.
+- [x] Create `AGENTS.md`, `README.md`, `.env.example`, `docs/STATUS.md`, `docs/DECISIONS.md`, `docs/PRODUCT_CONTRACT.md`, and focused phase files.
+- [x] Create a minimal Streamlit app that starts and displays the product name plus phase status.
+- [x] Create `config/attribute_registry.xlsx` with the five sheets specified in Section 6.
+- [x] Populate `Attribute_Sets` with every ordered header from Appendix A.
+- [x] Populate one unique definition row for every unique header.
+- [x] Mark system-copy and generated fields correctly.
+- [x] Create empty permitted-value slots for user-supplied values. Do not invent final CMS enums.
+- [x] Seed the approved alias `A-Line Fit` → `A-Line` for `attributes__fit_type` only if `A-Line` exists in the permitted values; otherwise place it in a clearly reported pending state.
+- [x] Implement registry loading, normalization, indexing, and validation.
+- [x] Implement a registry fingerprint/version hash.
+- [x] Add tests for header order, duplicate detection, missing definitions, invalid aliases, invalid data types, and invalid profiles.
+- [x] Document how the user updates and reloads the registry workbook.
 
 ### Required `AGENTS.md` content
 
@@ -894,13 +894,13 @@ Create the minimal runnable repository, persistent agent context, exact attribut
 
 ### Acceptance criteria
 
-- [ ] A clean Codespace can install the project using documented commands.
-- [ ] `streamlit run app.py` starts without an exception.
-- [ ] Registry validation passes for the committed workbook.
-- [ ] Every attribute set exactly matches Appendix A in name, membership, and order.
-- [ ] Every mapped header has exactly one definition.
-- [ ] The loader rejects a deliberately duplicated canonical value and invalid alias fixture.
-- [ ] Tests and Ruff pass.
+- [x] A clean Codespace can install the project using documented commands.
+- [x] `streamlit run app.py` starts without an exception.
+- [x] Registry validation passes for the committed workbook.
+- [x] Every attribute set exactly matches Appendix A in name, membership, and order.
+- [x] Every mapped header has exactly one definition.
+- [x] The loader rejects a deliberately duplicated canonical value and invalid alias fixture.
+- [x] Tests and Ruff pass.
 - [ ] `docs/STATUS.md` identifies Phase 2 as the next phase.
 
 ### Verification
@@ -923,32 +923,32 @@ Build input parsing, identifier preservation, uploaded-image matching, validatio
 
 ### Required work
 
-- [ ] Add CMS Generator page with attribute-set selector.
-- [ ] Accept input `.xlsx`; add `.xls` parsing only through a tested library.
-- [ ] Parse required columns into Pydantic `InputRow` objects.
-- [ ] Preserve identifiers as strings and leading zeros.
-- [ ] Validate required columns, duplicates, blanks, types, and formulas.
-- [ ] Accept multiple images and ZIP upload.
-- [ ] Safely extract ZIP files.
-- [ ] Match images to SKUs using the final ordinal suffix.
-- [ ] Validate formats, decoding, size, EXIF orientation, duplicates, missing images, and orphan images.
-- [ ] Display a concise validation table grouped by severity.
-- [ ] Block processing on critical errors and allow warnings to continue.
-- [ ] Create an exact CMS output skeleton using the selected attribute-set headers and one row per input SKU.
-- [ ] Copy system input values to their exact output columns.
-- [ ] Export valid `.xlsx`.
+- [x] Add CMS Generator page with attribute-set selector.
+- [x] Accept input `.xlsx`; add `.xls` parsing only through a tested library.
+- [x] Parse required columns into Pydantic `InputRow` objects.
+- [x] Preserve identifiers as strings and leading zeros.
+- [x] Validate required columns, duplicates, blanks, types, and formulas.
+- [x] Accept multiple images and ZIP upload.
+- [x] Safely extract ZIP files.
+- [x] Match images to SKUs using the final ordinal suffix.
+- [x] Validate formats, decoding, size, EXIF orientation, duplicates, missing images, and orphan images.
+- [x] Display a concise validation table grouped by severity.
+- [x] Block processing on critical errors and allow warnings to continue.
+- [x] Create an exact CMS output skeleton using the selected attribute-set headers and one row per input SKU.
+- [x] Copy system input values to their exact output columns.
+- [x] Export valid `.xlsx`.
 - [ ] Confirm whether true `.xls` is required; if required, implement and test it without extension renaming.
-- [ ] Add fixtures for leading-zero identifiers, hyphenated SKUs, malformed files, missing base codes, duplicate images, and orphan images.
+- [x] Add fixtures for leading-zero identifiers, hyphenated SKUs, malformed files, missing base codes, duplicate images, and orphan images.
 
 ### Acceptance criteria
 
-- [ ] Valid workbook and images produce a ready-to-process preview.
-- [ ] Leading-zero SKU/EAN values survive parse and export unchanged.
-- [ ] `ABC-12-2.jpg` correctly maps to SKU `ABC-12`, ordinal `2`.
-- [ ] Critical workbook/image errors prevent processing with actionable messages.
-- [ ] The exported blank template has the exact selected header order and no extra columns.
-- [ ] No network or LLM call occurs.
-- [ ] Tests and Ruff pass.
+- [x] Valid workbook and images produce a ready-to-process preview.
+- [x] Leading-zero SKU/EAN values survive parse and export unchanged.
+- [x] `ABC-12-2.jpg` correctly maps to SKU `ABC-12`, ordinal `2`.
+- [x] Critical workbook/image errors prevent processing with actionable messages.
+- [x] The exported blank template has the exact selected header order and no extra columns.
+- [x] No network or LLM call occurs.
+- [x] Tests and Ruff pass.
 
 ### Verification
 
@@ -967,30 +967,30 @@ Deliver the complete deterministic image-download module with safe URL handling,
 
 ### Required work
 
-- [ ] Add Image Downloader page.
-- [ ] Parse SKU from column A and URLs from columns B onward.
-- [ ] Preserve URL ordinal by physical column position.
-- [ ] Validate HTTP/HTTPS URLs and protect against SSRF across redirects.
-- [ ] Enforce concurrency, timeout, retry, response-size, and pixel limits.
-- [ ] Validate response content and decode images safely.
-- [ ] Implement required `PAD_WHITE` mode exactly as Section 9 specifies.
-- [ ] Add preview for a sample of processed images.
-- [ ] Save `sku-ordinal.jpg` names in deterministic order.
-- [ ] Create a flat ZIP containing images only.
-- [ ] Produce a separate download/error report.
-- [ ] Allow retry of failed URLs without redownloading successful files.
-- [ ] Define an optional background-removal adapter interface without forcing a heavy dependency.
-- [ ] Add mocked HTTP tests for success, redirects, timeouts, 403/429/500 responses, oversized responses, HTML responses, transparent PNG, CMYK JPEG, broken image, and private-network URL rejection.
+- [x] Add Image Downloader page.
+- [x] Parse SKU from column A and URLs from columns B onward.
+- [x] Preserve URL ordinal by physical column position.
+- [x] Validate HTTP/HTTPS URLs and protect against SSRF across redirects.
+- [x] Enforce concurrency, timeout, retry, response-size, and pixel limits.
+- [x] Validate response content and decode images safely.
+- [x] Implement required `PAD_WHITE` mode exactly as Section 9 specifies.
+- [x] Add preview for a sample of processed images.
+- [x] Save `sku-ordinal.jpg` names in deterministic order.
+- [x] Create a flat ZIP containing images only.
+- [x] Produce a separate download/error report.
+- [x] Allow retry of failed URLs without redownloading successful files.
+- [x] Define an optional background-removal adapter interface without forcing a heavy dependency.
+- [x] Add mocked HTTP tests for success, redirects, timeouts, 403/429/500 responses, oversized responses, HTML responses, transparent PNG, CMYK JPEG, broken image, and private-network URL rejection.
 
 ### Acceptance criteria
 
-- [ ] URL 1 maps to `sku-1.jpg`, URL 2 to `sku-2.jpg`, even when URL 1 fails.
-- [ ] Every successful output is exactly 1500 × 1500 RGB JPEG with white canvas and preserved aspect ratio.
-- [ ] No default processing stretches or crops the source.
-- [ ] ZIP is flat and contains only successful images.
-- [ ] Failure report contains enough information for user correction and retry.
-- [ ] Private/local URL tests are rejected.
-- [ ] Tests and Ruff pass without live internet.
+- [x] URL 1 maps to `sku-1.jpg`, URL 2 to `sku-2.jpg`, even when URL 1 fails.
+- [x] Every successful output is exactly 1500 × 1500 RGB JPEG with white canvas and preserved aspect ratio.
+- [x] No default processing stretches or crops the source.
+- [x] ZIP is flat and contains only successful images.
+- [x] Failure report contains enough information for user correction and retry.
+- [x] Private/local URL tests are rejected.
+- [x] Tests and Ruff pass without live internet.
 
 ### Verification
 
@@ -1009,30 +1009,30 @@ Implement per-base-code workflow control, persistent job state, representative-S
 
 ### Required work
 
-- [ ] Create SQLite schema and minimal versioned migrations.
-- [ ] Persist jobs, job items, image assets, group mode, representative SKU, statuses, errors, and artifact paths.
-- [ ] Group valid input rows by `base_code` with SKU fallback for blanks.
-- [ ] Add editable group table to CMS Generator.
-- [ ] Default every group to `PER_SKU`.
-- [ ] Support `BASE_CODE_SIZE_ONLY` per group and bulk selection.
-- [ ] Auto-suggest, but never silently select, size-only mode when descriptions differ only by recognized size terms.
-- [ ] Warn when size-only mode has multiple detected colors, patterns, product types, or pack counts.
-- [ ] Implement representative-SKU selection rules.
-- [ ] Create deterministic work items that show the number of planned vision requests before execution.
-- [ ] Implement job state transitions and partial failure handling.
-- [ ] Implement the cache-key contract using a fake extraction result.
-- [ ] Add Job History page with resume/retry controls.
-- [ ] Add tests for mixed groups, blank base codes, override persistence, representative selection, cache hits, cache invalidation, and partial failure.
+- [x] Create SQLite schema and minimal versioned migrations.
+- [x] Persist jobs, job items, image assets, group mode, representative SKU, statuses, errors, and artifact paths.
+- [x] Group valid input rows by `base_code` with SKU fallback for blanks.
+- [x] Add editable group table to CMS Generator.
+- [x] Default every group to `PER_SKU`.
+- [x] Support `BASE_CODE_SIZE_ONLY` per group and bulk selection.
+- [x] Auto-suggest, but never silently select, size-only mode when descriptions differ only by recognized size terms.
+- [x] Warn when size-only mode has multiple detected colors, patterns, product types, or pack counts.
+- [x] Implement representative-SKU selection rules.
+- [x] Create deterministic work items that show the number of planned vision requests before execution.
+- [x] Implement job state transitions and partial failure handling.
+- [x] Implement the cache-key contract using a fake extraction result.
+- [x] Add Job History page with resume/retry controls.
+- [x] Add tests for mixed groups, blank base codes, override persistence, representative selection, cache hits, cache invalidation, and partial failure.
 
 ### Acceptance criteria
 
-- [ ] A mixed upload can use size-only mode for one base code and per-SKU mode for another.
-- [ ] Planned request count is correct before processing.
-- [ ] Representative SKU is deterministic and user-overridable.
-- [ ] Restarting the app preserves jobs and selections.
-- [ ] Changed images, registry, prompt version, or mode invalidate the cache.
-- [ ] One failed item does not delete successful state.
-- [ ] Tests and Ruff pass.
+- [x] A mixed upload can use size-only mode for one base code and per-SKU mode for another.
+- [x] Planned request count is correct before processing.
+- [x] Representative SKU is deterministic and user-overridable.
+- [x] Restarting the app preserves jobs and selections.
+- [x] Changed images, registry, prompt version, or mode invalidate the cache.
+- [x] One failed item does not delete successful state.
+- [x] Tests and Ruff pass.
 
 ### Verification
 
@@ -1051,22 +1051,22 @@ Implement evidence-aware multimodal extraction for Topwear only, using a replace
 
 ### Required work
 
-- [ ] Create LLM client interface plus OpenAI Responses API implementation and fake test client.
-- [ ] Add environment validation without exposing the API key.
-- [ ] Define versioned extraction prompt and schema.
-- [ ] Use Topwear product profiles only.
-- [ ] Send only relevant headers and permitted values.
-- [ ] Label every image explicitly with SKU and image ordinal in request content.
-- [ ] Delimit `model_code_input_data` as untrusted data.
-- [ ] Implement `PER_SKU` request construction.
-- [ ] Implement one representative request for `BASE_CODE_SIZE_ONLY`.
-- [ ] Parse and validate Structured Outputs into `VisionResult`.
-- [ ] Reject unknown headers, unknown SKUs, invalid statuses, and invalid enums.
-- [ ] Store raw sanitized response, parsed result, prompt/schema/model versions, request ID, usage, and errors.
-- [ ] Retry only retryable failures.
-- [ ] Add processing progress and cancellation-safe state updates.
+- [x] Create LLM client interface plus OpenAI Responses API implementation and fake test client.
+- [x] Add environment validation without exposing the API key.
+- [x] Define versioned extraction prompt and schema.
+- [x] Use Topwear product profiles only.
+- [x] Send only relevant headers and permitted values.
+- [x] Label every image explicitly with SKU and image ordinal in request content.
+- [x] Delimit `model_code_input_data` as untrusted data.
+- [x] Implement `PER_SKU` request construction.
+- [x] Implement one representative request for `BASE_CODE_SIZE_ONLY`.
+- [x] Parse and validate Structured Outputs into `VisionResult`.
+- [x] Reject unknown headers, unknown SKUs, invalid statuses, and invalid enums.
+- [x] Store raw sanitized response, parsed result, prompt/schema/model versions, request ID, usage, and errors.
+- [x] Retry only retryable failures.
+- [x] Add processing progress and cancellation-safe state updates.
 - [ ] Build at least 10 manually checked Topwear golden fixtures.
-- [ ] Default tests must use the fake client; live integration test must be opt-in.
+- [x] Default tests must use the fake client; live integration test must be opt-in.
 
 ### Topwear visual focus
 
@@ -1090,14 +1090,14 @@ Treat material, fabric composition, fabric care, exact fit, comfort, origin, wei
 
 ### Acceptance criteria
 
-- [ ] Per-SKU mode produces exactly one planned request per SKU.
-- [ ] Size-only mode produces one request per selected base-code group.
-- [ ] Image labels and SKU associations survive parsing.
-- [ ] Unsupported evidence returns unknown/blank rather than invented values.
-- [ ] Invalid model outputs cannot enter the database as accepted canonical values.
-- [ ] Cached results prevent unchanged repeated calls.
+- [x] Per-SKU mode produces exactly one planned request per SKU.
+- [x] Size-only mode produces one request per selected base-code group.
+- [x] Image labels and SKU associations survive parsing.
+- [x] Unsupported evidence returns unknown/blank rather than invented values.
+- [x] Invalid model outputs cannot enter the database as accepted canonical values.
+- [x] Cached results prevent unchanged repeated calls.
 - [ ] Golden fixtures have recorded expected observations and review decisions.
-- [ ] Tests and Ruff pass without a live API key.
+- [x] Tests and Ruff pass without a live API key.
 
 ### Verification
 
@@ -1122,32 +1122,32 @@ Turn Topwear observations into reviewable canonical facts, generate factual cata
 
 ### Required work
 
-- [ ] Implement deterministic merge priority from Section 8.
-- [ ] Implement canonical, normalized, alias, and review-only fuzzy matching.
-- [ ] Never auto-add new permitted values.
-- [ ] Add review UI showing input, proposed value, evidence, source conflict, and final value.
-- [ ] Use permitted-value dropdowns for enum fields.
-- [ ] Allow accept, edit, blank, and reject actions.
-- [ ] Persist review decisions and user overrides.
-- [ ] Add review filters for conflict, unmapped value, insufficient evidence, invalid enum, and low confidence.
+- [x] Implement deterministic merge priority from Section 8.
+- [x] Implement canonical, normalized, alias, and review-only fuzzy matching.
+- [x] Never auto-add new permitted values.
+- [x] Add review UI showing input, proposed value, evidence, source conflict, and final value.
+- [x] Use permitted-value dropdowns for enum fields.
+- [x] Allow accept, edit, blank, and reject actions.
+- [x] Persist review decisions and user overrides.
+- [x] Add review filters for conflict, unmapped value, insufficient evidence, invalid enum, and low confidence.
 - [ ] Define and approve Topwear title/name/bullet/keyword templates using golden examples.
-- [ ] Implement text-only copy generation from accepted normalized facts.
-- [ ] Validate generated copy for unsupported claims, repetition, character limits, and forbidden placeholder text.
-- [ ] Flatten shared and SKU-level accepted values into one row per SKU.
-- [ ] Export exact Topwear workbook with no internal columns.
-- [ ] Produce separate validation summary.
-- [ ] Add end-to-end Topwear tests from upload through export using fake LLM responses.
+- [x] Implement text-only copy generation from accepted normalized facts.
+- [x] Validate generated copy for unsupported claims, repetition, character limits, and forbidden placeholder text.
+- [x] Flatten shared and SKU-level accepted values into one row per SKU.
+- [x] Export exact Topwear workbook with no internal columns.
+- [x] Produce separate validation summary.
+- [x] Add end-to-end Topwear tests from upload through export using fake LLM responses.
 
 ### Acceptance criteria
 
-- [ ] `A-Line Fit` normalizes to `A-Line` when configured.
-- [ ] Input values beat model values unless a reviewer explicitly changes them.
-- [ ] Unmapped values remain blank and visible in review.
-- [ ] Review decisions survive restart.
-- [ ] Catalog copy uses only accepted facts.
-- [ ] The Topwear output contains exact headers, exact row count, permitted enum values, preserved identifiers, and no debug fields.
-- [ ] Reopening the exported workbook preserves values and formatting requirements.
-- [ ] End-to-end tests and Ruff pass.
+- [x] `A-Line Fit` normalizes to `A-Line` when configured.
+- [x] Input values beat model values unless a reviewer explicitly changes them.
+- [x] Unmapped values remain blank and visible in review.
+- [x] Review decisions survive restart.
+- [x] Catalog copy uses only accepted facts.
+- [x] The Topwear output contains exact headers, exact row count, permitted enum values, preserved identifiers, and no debug fields.
+- [x] Reopening the exported workbook preserves values and formatting requirements.
+- [x] End-to-end tests and Ruff pass.
 
 ### Verification
 
