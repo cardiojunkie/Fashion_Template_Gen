@@ -12,13 +12,13 @@ Last updated: 2026-07-16
   The legacy header is rejected explicitly. `base_code` remains the only variant-grouping key.
 - Added the fixed `NvidiaInklingClient` for `thinkingmachines/inkling` at NVIDIA's HTTPS chat
   endpoint with `temperature=1`, `top_p=0.95`, `max_tokens=8192`, `stream=false`, mandatory
-  top-level `guided_json`, high-detail images, retries, bounded time/size, redirect rejection,
-  response validation, and full-chain secret redaction.
+  SGLang `response_format`, high-detail images, retries, bounded time/size, redirect rejection,
+  response validation, and full-chain secret redaction. Adapter/cache identity is version 2.
 - Removed provider configuration from application navigation and all active configurable-provider
   and legacy OpenAI runtime paths. Schema-v6 provider/capability/audit rows remain inert and
   readable. New job snapshots contain fixed NVIDIA endpoint/model fingerprints, never the key.
 - Added **Test NVIDIA Connection** above upload/extraction. Its generated 96 × 96 blue-square PNG
-  and exact two-field schema test authentication, model access, vision, and guided JSON in one
+  and exact two-field schema test authentication, model access, vision, and structured output in one
   call. The pass is bound to the current Streamlit session and `NVIDIA_API_KEY` fingerprint;
   extraction and catalog copy stay disabled until it passes.
 - Kept the physical SQLite `job_rows.model_data` column while mapping it to `input_data` in code.
@@ -37,8 +37,9 @@ Last updated: 2026-07-16
   identifier safety, base-code grouping, independent `input_data` cache invalidation, strict NVIDIA
   payload/response boundaries, the session/key connection gate, one-click job orchestration with
   SKU evidence plus labelled images, and read-only historical extraction behavior.
-- No live NVIDIA call was made. The credential pasted in chat is treated as exposed and was not
-  used, stored, logged, or added to the repository.
+- The adapter-v1 live diagnostic authenticated but returned non-JSON because its structured-output
+  parameter was incompatible with Inkling's SGLang backend. Adapter v2 has not been live-verified.
+  Any credential exposed in chat or diagnostic output must be revoked and is not approved for reuse.
 
 ## Release blockers
 

@@ -25,7 +25,7 @@ NVIDIA_IMAGE_DETAIL = "high"
 NVIDIA_MAX_TOKENS = 8_192
 NVIDIA_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 NVIDIA_REQUEST_TIMEOUT_SECONDS = 60
-NVIDIA_ADAPTER_VERSION = "nvidia-inkling-chat-v1"
+NVIDIA_ADAPTER_VERSION = "nvidia-inkling-chat-v2"
 NVIDIA_CACHE_KEY = hashlib.sha256(
     "\0".join(
         (
@@ -36,7 +36,7 @@ NVIDIA_CACHE_KEY = hashlib.sha256(
             "temperature=1",
             "top_p=0.95",
             f"max_tokens={NVIDIA_MAX_TOKENS}",
-            "guided_json",
+            "response_format=json_schema",
         )
     ).encode()
 ).hexdigest()
@@ -242,9 +242,14 @@ def _nvidia_payload(payload: Mapping[str, object]) -> dict[str, object]:
     if isinstance(text, Mapping):
         format_value = text.get("format")
         if isinstance(format_value, Mapping) and isinstance(format_value.get("schema"), Mapping):
-            result["guided_json"] = dict(format_value["schema"])
-    if "guided_json" not in result:
-        raise ValueError("NVIDIA requests require a guided JSON schema.")
+            result["response_format"] = {
+                "type": "json_schema",
+                "schema": json.dumps(
+                    format_value["schema"], separators=(",", ":"), sort_keys=True
+                ),
+            }
+    if "response_format" not in result:
+        raise ValueError("NVIDIA requests require a JSON response schema.")
     return result
 
 
@@ -281,7 +286,7 @@ class NvidiaInklingClient:
                     "Accept": "application/json",
                     "Authorization": f"Bearer {secret}",
                     "Content-Type": "application/json",
-                    "User-Agent": "Fashion-CMS-NVIDIA-Inkling/1",
+                    "User-Agent": "Fashion-CMS-NVIDIA-Inkling/2",
                 },
                 json=_nvidia_payload(request.payload),
                 follow_redirects=False,

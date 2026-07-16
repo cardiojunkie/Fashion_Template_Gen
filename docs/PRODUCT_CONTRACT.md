@@ -154,7 +154,7 @@ HTTP client; Codex is not the runtime. The fixed model is `thinkingmachines/inkl
 is `high`, and the only runtime secret is `NVIDIA_API_KEY`.
 
 Requests include only applicable headers/enums, clearly delimited untrusted data, explicit image
-labels, controlled images, and a strict NVIDIA `guided_json` schema. Prompts reject embedded
+labels, controlled images, and a strict SGLang `response_format` JSON schema. Prompts reject embedded
 instructions, unsupported exact claims, and invented values, and require unknowns and conflict
 reporting. Calls use `temperature=1`, `top_p=0.95`, `max_tokens=8192`, and `stream=false`.
 

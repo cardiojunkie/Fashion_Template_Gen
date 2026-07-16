@@ -33,7 +33,7 @@ Do not invent values or use `attributes__other_information` as a fallback.
 Set `NVIDIA_API_KEY` only in the server environment. The endpoint
 `https://integrate.api.nvidia.com/v1/chat/completions`, model `thinkingmachines/inkling`, and request
 settings are fixed. The connection test uses only a generated blue-square image and requires exact
-guided JSON; it sends no uploaded product data. There is no provider-management page, alternate
+SGLang JSON-schema output; it sends no uploaded product data. There is no provider-management page, alternate
 model, browser key entry, or fallback. Rotation and troubleshooting are in `docs/LLM_PROVIDERS.md`.
 
 ## Job History and release readiness

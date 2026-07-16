@@ -10,14 +10,15 @@ provider, endpoint, or model in the website.
 - Server secret: `NVIDIA_API_KEY`
 - Request settings: image detail `high`, `temperature=1`, `top_p=0.95`, `max_tokens=8192`, and
   `stream=false`
-- Structured responses: NVIDIA `guided_json` with the request's exact JSON schema
+- Structured responses: SGLang `response_format` with `type=json_schema` and the request's exact
+  schema serialized as compact JSON
 
 Put `NVIDIA_API_KEY` in the server environment or deployment secret manager. Never put a real key
 in Git, `.env.example`, a workbook, browser field, screenshot, report, URL, or chat. Revoke and
 rotate any key that has been exposed.
 
-NVIDIA recommends `guided_json` rather than unconstrained JSON-object mode for schema-shaped
-responses; see the [NVIDIA structured-generation guide](https://docs.nvidia.com/nim/large-language-models/1.14.0/structured-generation.html).
+NVIDIA's SGLang backend requires `response_format` rather than the vLLM structured-output
+parameters; see the [NVIDIA backend compatibility guide](https://docs.nvidia.com/nim/large-language-models/1.15.0/nim-container-variants.html).
 
 ## Connection gate
 
@@ -29,7 +30,7 @@ exactly this two-field response:
 {"shape": "square", "color": "blue"}
 ```
 
-A pass proves authentication, fixed-model access, image input, and guided JSON handling in one
+A pass proves authentication, fixed-model access, image input, and exact JSON-schema handling in one
 request. It is bound to the current server session and API-key fingerprint. A missing or changed key,
 server restart, authentication error, transport error, malformed response, extra field, or value
 mismatch clears or fails the gate. **Run Data Extraction** remains disabled until the current gate
@@ -61,6 +62,8 @@ record fixed NVIDIA endpoint/model fingerprints, not the key.
 Schema-v6 provider, route, capability, and snapshot rows from earlier builds are preserved as inert
 audit history. They are not selectable and do not affect new jobs. A retry after a process restart
 requires the same validated workbook/images to be uploaded again and a fresh connection pass.
+Completed adapter-v1 jobs remain readable; unfinished adapter-v1 work requires re-upload because
+its obsolete structured-output request cannot be resumed under adapter v2.
 
 ## Troubleshooting
 

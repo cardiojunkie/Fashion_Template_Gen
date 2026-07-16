@@ -284,7 +284,7 @@ def test_nvidia_settings_require_only_secret_and_do_not_expose_it() -> None:
         NvidiaInklingClient(missing)
 
 
-def test_nvidia_client_sends_multimodal_guided_json_payload_and_parses_usage() -> None:
+def test_nvidia_client_sends_multimodal_response_format_and_parses_usage() -> None:
     request = LLMRequest(
         work_item_key="nvidia-item",
         payload={
@@ -337,7 +337,11 @@ def test_nvidia_client_sends_multimodal_guided_json_payload_and_parses_usage() -
     assert "store" not in payload
     assert payload["messages"][0] == {"role": "system", "content": "system rules"}
     assert payload["messages"][1]["content"][1]["type"] == "image_url"
-    assert payload["guided_json"] == {"type": "object", "additionalProperties": False}
+    assert payload["response_format"] == {
+        "type": "json_schema",
+        "schema": '{"additionalProperties":false,"type":"object"}',
+    }
+    assert "guided_json" not in payload
     assert response.usage["input_tokens"] == 12
     assert response.usage["output_tokens"] == 4
     assert NVIDIA_KEY not in response.usage
@@ -357,19 +361,21 @@ def test_nvidia_connection_is_one_production_shaped_vision_schema_call() -> None
 
     assert response.status == "completed"
     assert len(seen) == 1
-    assert seen[0]["guided_json"]["required"] == ["shape", "color"]
-    assert seen[0]["guided_json"]["properties"]["shape"]["enum"] == [
+    response_schema = json.loads(seen[0]["response_format"]["schema"])
+    assert response_schema["required"] == ["shape", "color"]
+    assert response_schema["properties"]["shape"]["enum"] == [
         "square",
         "circle",
         "triangle",
     ]
-    assert seen[0]["guided_json"]["properties"]["color"]["enum"] == [
+    assert response_schema["properties"]["color"]["enum"] == [
         "blue",
         "red",
         "green",
         "white",
     ]
     assert seen[0]["max_tokens"] == 8192
+    assert "guided_json" not in seen[0]
     image_part = seen[0]["messages"][1]["content"][1]["image_url"]
     assert image_part["detail"] == "high"
     image_url = image_part["url"]
@@ -457,7 +463,7 @@ def test_nvidia_drops_a_request_id_that_echoes_the_key_and_rejects_key_output() 
     assert NVIDIA_KEY not in "".join(traceback.format_exception(raised.value))
 
 
-def test_nvidia_rejects_requests_without_guided_json_before_network() -> None:
+def test_nvidia_rejects_requests_without_response_schema_before_network() -> None:
     attempts = 0
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -471,7 +477,7 @@ def test_nvidia_rejects_requests_without_guided_json_before_network() -> None:
     )
     with httpx.Client(
         transport=httpx.MockTransport(handler)
-    ) as http_client, pytest.raises(InvalidLLMResponse, match="guided JSON"):
+    ) as http_client, pytest.raises(InvalidLLMResponse, match="JSON response schema"):
         NvidiaInklingClient(nvidia_settings(), http_client).create(request)
 
     assert attempts == 0
@@ -512,6 +518,7 @@ def test_nvidia_connection_rejects_wrong_or_malformed_result() -> None:
     for content in (
         '{"shape":"circle","color":"blue"}',
         '{"shape":"circle","shape":"square","color":"blue"}',
+        '```json\n{"shape":"square","color":"blue"}\n```',
         "not-json",
     ):
         with httpx.Client(
@@ -523,7 +530,7 @@ def test_nvidia_connection_rejects_wrong_or_malformed_result() -> None:
 
 
 @pytest.mark.live
-def test_live_nvidia_connection_with_vision_and_guided_json() -> None:
+def test_live_nvidia_connection_with_vision_and_response_format() -> None:
     if os.environ.get("RUN_LIVE_NVIDIA_TESTS") != "1":
         pytest.skip("set RUN_LIVE_NVIDIA_TESTS=1 to allow the opt-in live request")
     settings = NvidiaSettings.from_env()

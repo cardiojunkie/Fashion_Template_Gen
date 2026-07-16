@@ -73,16 +73,25 @@ These defaults satisfy the untrusted-input and data-loss boundaries in the produ
 - Live extraction and catalog copy now use only NVIDIA's fixed
   `https://integrate.api.nvidia.com/v1/chat/completions` endpoint and
   `thinkingmachines/inkling` model. The sole runtime secret is `NVIDIA_API_KEY`; model, endpoint,
-  image detail, sampling values, token limit, streaming behavior, and guided-JSON mode are code
+  image detail, sampling values, token limit, streaming behavior, and structured-output mode are code
   constants. This supersedes the bring-your-own-provider runtime decision above.
 - The former provider/configuration tables and snapshots remain intact as non-secret audit
   history, but no provider-management page, route selection, model discovery, browser key entry,
   legacy OpenAI fallback, or automatic alternate route remains active.
 - A live call is authorized only after the current session/key fingerprint passes one exact
-  blue-square image plus guided-JSON diagnostic. Uploads never trigger extraction automatically;
+  blue-square image plus structured-output diagnostic. Uploads never trigger extraction automatically;
   the operator must still confirm charges and click **Run Data Extraction**.
 - The physical `job_rows.model_data` SQLite column is retained and now maps to `input_data`,
   avoiding a destructive migration. Version-2 prompt/cache contracts prevent unfinished old jobs
   from running under changed evidence semantics while keeping completed history readable.
 - Missing approved pricing remains visibly unavailable. No price, product fact, permitted value,
   or release approval is inferred from the fixed runtime choice.
+
+## 2026-07-16 — Inkling SGLang structured-output transport
+
+- The first live connection diagnostic authenticated but returned non-JSON because the adapter-v1
+  structured-output parameter was incompatible with Inkling's SGLang backend.
+- Adapter v2 sends the unchanged strict schema through SGLang `response_format`, with the schema
+  serialized as compact JSON. Strict parsing remains mandatory; prose and fenced JSON are rejected.
+- The adapter/cache fingerprint changes. Completed adapter-v1 history remains readable, while
+  unfinished adapter-v1 work requires re-upload rather than cross-contract resume.

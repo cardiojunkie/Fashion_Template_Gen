@@ -784,7 +784,7 @@ operator settings. There is no provider-management page or automatic fallback.
 
 Before extraction, **Test NVIDIA Connection** sends only an in-memory 96 x 96 white PNG containing
 a blue square. It must return exactly `{"shape":"square","color":"blue"}` under a two-field
-`guided_json` schema. Bind the pass to the current server session and API-key fingerprint; a
+SGLang `response_format` JSON schema. Bind the pass to the current server session and API-key fingerprint; a
 missing, changed, or failing key keeps **Run Data Extraction** disabled.
 
 ### 10.3 Multimodal request
@@ -798,7 +798,7 @@ Each request contains:
 - Untrusted product data clearly delimited as data.
 - Explicit SKU/image labels inserted before each image.
 - Selected images at controlled resolution/detail.
-- A strict NVIDIA `guided_json` schema.
+- A strict SGLang `response_format` JSON schema.
 
 The prompt must explicitly state:
 

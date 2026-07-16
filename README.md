@@ -89,8 +89,9 @@ export NVIDIA_API_KEY="your-rotated-secret-key"
 
 The endpoint (`https://integrate.api.nvidia.com/v1/chat/completions`), model
 (`thinkingmachines/inkling`), and image detail (`high`) are fixed. Click **Test NVIDIA Connection**
-after upload; it validates authentication, vision, and exact guided JSON with a generated diagnostic
-image. **Run Data Extraction** stays disabled until that test passes for the current session/key.
+after upload; it validates authentication, vision, and exact SGLang JSON-schema output with a
+generated diagnostic image. **Run Data Extraction** stays disabled until that test passes for the
+current session/key.
 The application never displays or stores the key. See [the NVIDIA runtime guide](docs/LLM_PROVIDERS.md).
 
 ## Verify

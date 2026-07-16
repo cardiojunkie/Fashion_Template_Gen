@@ -140,7 +140,7 @@ Do this only after an approved rotated NVIDIA key, pricing decision, and ground 
 5. Configure `NVIDIA_API_KEY` server-side. Never enter a secret in the browser,
    workbook, screenshot, or report.
 6. Restart the app and confirm the displayed fixed model is `thinkingmachines/inkling`.
-7. Click **Test NVIDIA Connection** and confirm the generated blue-square guided-JSON diagnostic
+7. Click **Test NVIDIA Connection** and confirm the generated blue-square SGLang response-format diagnostic
    passes before any product extraction is enabled.
 8. Upload one set/profile at a time and click **Run Data Extraction** explicitly for each run.
 9. Compare every proposed value with approved ground truth.
@@ -287,7 +287,7 @@ browser URL, or test report. Each live diagnostic may incur a provider charge.
    `https://integrate.api.nvidia.com/v1/chat/completions` and `thinkingmachines/inkling`. Confirm no
    provider, endpoint, or model editor exists.
 3. Click **Test NVIDIA Connection** once. Confirm it sends only the generated 96 x 96 white image
-   with a blue square and requires exactly `shape=square` and `color=blue` under guided JSON.
+   with a blue square and requires exactly `shape=square` and `color=blue` under the JSON schema.
 4. Confirm a pass enables extraction only for the current server session/key fingerprint. Restart
    or rotate the key and confirm a fresh pass is required.
 5. In an operator-controlled mock or automated test, exercise 401, 429, timeout, redirect,
