@@ -82,6 +82,7 @@ class CacheContext(BaseModel):
     prompt_version: str
     model_identifier: str
     image_detail: str
+    provider_cache_key: str = ""
 
 
 class PlannedWorkItem(BaseModel):
@@ -590,6 +591,7 @@ def build_cache_payload(
         "schema_version": context.schema_version,
         "model_identifier": context.model_identifier,
         "image_detail": context.image_detail,
+        "provider_cache_key": context.provider_cache_key,
     }
 
 

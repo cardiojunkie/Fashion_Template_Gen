@@ -1,33 +1,35 @@
 # Project Status
 
-Current phase: Phase 8 — retrospective audit and manual UAT preparation
-Status: engineering audit complete; ready for manual UAT; production release blocked
+Current phase: Post–Phase 8 — bring-your-own LLM provider extension
+Status: engineering implementation/security audit complete; provider and release UAT pending
 Release candidate: 0.1.0-rc1 (unpublished)
 Last updated: 2026-07-16
 
 ## Completed
 
-- Audited 140 Phase 1–8 requirements against implementation and verification: 132 PASS, 2 PARTIAL,
-  6 BLOCKED_USER_INPUT, and no remaining FAIL or NOT_IMPLEMENTED rows.
-- Fixed two Major audit defects: missing manual-acceptance artifacts/verifier and a launcher host
-  override that could violate the required `0.0.0.0` bind. No Critical defect was found.
-- Added `docs/RETROSPECTIVE_AUDIT.md`, `docs/AUDIT_FINDINGS.md`, and evidence-backed PLAN checkbox
-  updates while leaving human approval and live-evaluation items unchecked.
-- Added the non-developer `uat/` pack: 13-sheet checklist, seven structural workbooks, negative and
-  image/downloader fixtures, real-product ground-truth template, registry-generated expected
-  headers, pack generator, and read-only CMS export verifier with terminal/JSON reporting.
-- Preserved exact CMS contracts, safe offline fake clients, strict evidence/security boundaries,
-  partial recovery, and existing production blockers.
+- Added SQLite schema v6 provider configuration, independent vision/catalog routes, versioned
+  OpenAI Responses and Chat Completions adapters, discovery, capability tests, non-secret job
+  snapshots, cache invalidation, disable/retire behavior, and offline fake-client compatibility.
+- Added masked session-only keys, environment references, and development-only AES-GCM database
+  secrets. Production encrypted entry stays disabled until real authentication exists.
+- Added HTTPS/public-network defaults, DNS/IP pinning, peer validation, fixed endpoint paths,
+  bounded responses/timeouts, strict auth headers, redirect blocking, sanitized errors, and exact
+  development allowlists that cannot permit metadata/link-local/multicast/reserved addresses.
+- Added the **LLM Providers** page, provider/operator guide, schema v6 backup/rollback notes, and a
+  14-sheet UAT workbook with 22 provider-specific checks. Existing Phase 1–8 workflows remain
+  unchanged and offline by default.
 
 ## Verification
 
-- Main and clean temporary environments: `327 passed, 1 skipped`; the skip is the explicit opt-in
-  live OpenAI test.
-- `ruff check .`, `git diff --check`, `python -m pip check`, registry validation, release-report
-  validation, `bash -n start.sh`, and executable check: pass.
-- Clean install: `python -m pip install -e ".[dev]"` passed in a new temporary virtual environment.
-- Runtime: existing private port 8501 returned `200 ok`; an audit-owned `./start.sh 8502` instance
-  returned `200 ok`, stopped cleanly, and left no listener.
+- Full suite: `378 passed, 1 skipped`; the skip is the explicit opt-in live OpenAI test.
+- `ruff check .`, `git diff --check`, `python -m pip check`, registry validation, and release-report
+  validation: pass.
+- `python -m pip install -e ".[dev]"`: pass with the new authenticated-encryption dependency.
+- Migration: a populated schema v5 temporary database upgraded to v6 without losing its job;
+  provider tables initialized empty and plaintext test secrets were absent from SQLite.
+- Runtime: existing workspace `./start.sh 8501` returned `200 ok`; a separate `./start.sh 8502`
+  returned `200` for `/` and `/LLM_Providers`, returned `ok` for health, stopped cleanly, and left
+  no listener. Streamlit component testing verified the API-key widget is password-masked/blank.
 
 ## Release blockers
 
@@ -38,9 +40,12 @@ Last updated: 2026-07-16
   and retention approval.
 - Approved production host, authentication, HTTPS/reverse proxy, storage/backup, monitoring, and
   network-egress configuration.
+- Approved live provider accounts/models, provider-side retention terms, pricing, and completion of
+  the provider UAT checklist. Native non-OpenAI protocols still require dedicated adapters.
 
 ## Next action
 
-Keep port 8501 private, follow `uat/README.md`, and record every result in
-`uat/manual_uat_checklist.xlsx`. Do not deploy, publish, tag, or mark production-ready until manual
-UAT and the user sign-off ledger are complete.
+Keep port 8501 private, follow section 15 of `uat/README.md`, and record all **LLM Providers** rows
+in `uat/manual_uat_checklist.xlsx` using only approved test credentials. Then run the existing
+Phase 1–8 UAT. Do not deploy, publish, tag, or mark production-ready until manual UAT and the user
+sign-off ledger are complete.

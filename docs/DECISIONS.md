@@ -50,3 +50,16 @@ These defaults satisfy the untrusted-input and data-loss boundaries in the produ
 - Resource limits are one validated environment-backed configuration. Approved model pricing and evaluation thresholds remain separate versioned JSON files; both are pending, so missing cost is displayed as unavailable and automatic acceptance remains review-required.
 - Uploaded workbooks, ZIPs, and images remain in memory rather than being extracted to disk. Durable cleanup is disabled until retention approval; root-scoped cleanup provides dry-run, symlink refusal, active-descendant protection, and idempotency for an approved future schedule.
 - `0.1.0-rc1` is an unpublished engineering release candidate. No host, container, authentication system, model, price, threshold, retention period, or missing business rule was selected on the user's behalf.
+
+## 2026-07-16 — Post–Phase 8 bring-your-own LLM providers
+
+- SQLite schema v6 stores non-secret OpenAI-compatible provider configuration, independent vision
+  and catalog routes, version-scoped capability/discovery results, and non-secret job snapshots.
+- Website-entered keys default to server-session memory. Persistence is limited to environment
+  references or AES-GCM ciphertext protected by an external 32-byte master key; encrypted storage
+  is unavailable in unauthenticated production.
+- Public endpoints require HTTPS/public addresses and fixed adapter paths. Exact allowlisted
+  private/HTTP endpoints are development-only. Route activation requires current text/structured
+  tests and, for vision, the deterministic blue-square diagnostic; no automatic fallback exists.
+- Native Anthropic, Gemini, Bedrock, Vertex, and other protocols remain outside this extension and
+  require dedicated adapters.

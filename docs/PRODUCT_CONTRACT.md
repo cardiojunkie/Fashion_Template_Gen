@@ -153,6 +153,22 @@ Requests include only applicable headers/enums, clearly delimited untrusted data
 
 Keep vision/data extraction separate from text-only generation until evaluation supports combining them. Retry only temporary/rate-limit failures; store request IDs and sanitized errors; make partial work resumable. Default tests use a fake client, and live tests are opt-in.
 
+Post–Phase 8, administrators in a private development deployment may configure OpenAI-compatible
+Responses or Chat Completions providers in the website. Vision extraction and catalog copy use
+independent logical routes; activation requires current capability tests and never silently falls
+back to another provider/model. Native non-OpenAI protocols require dedicated adapters.
+
+Website-entered secrets default to server-session memory. Persistent configuration stores either
+an environment-variable name or AES-GCM ciphertext protected by an external 32-byte master key;
+plaintext keys never enter SQLite, URLs, logs, job/cache records, reports, widget defaults, or
+history. Encrypted database storage is unavailable without the master key and, in production,
+application authentication.
+
+Custom base URLs are an SSRF boundary: public deployment requires HTTPS, verified TLS, public
+destinations, bounded responses, known adapter paths, and redirect rejection. Local/private HTTP
+endpoints require explicit development-only server flags plus an exact host allowlist, and those
+flags are ignored in production.
+
 ## Quality gates
 
 Build a manually checked golden set before broad rollout: at least ten Topwear base codes before Phase 6 and representative examples from every set/accessory profile before release.

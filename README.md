@@ -94,6 +94,12 @@ export OPENAI_IMAGE_DETAIL="high"
 disables live extraction with a configuration message. It never displays or stores the API key.
 Use `.env.example` as a name-only reference; do not put a real secret in Git.
 
+The **LLM Providers** page also supports separately tested and activated OpenAI-compatible
+Responses or Chat Completions routes for vision and catalog copy. It provides model discovery with
+manual-ID fallback plus session-only, environment-reference, and guarded encrypted-database secret
+modes. Start with [docs/LLM_PROVIDERS.md](docs/LLM_PROVIDERS.md); keep the app private because it
+does not yet have user authentication.
+
 ## Verify
 
 ```bash

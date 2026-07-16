@@ -13,4 +13,9 @@ The backup uses SQLite's online backup API, writes a temporary file, runs `PRAGM
 
 Restore only during a maintenance window: stop the app, preserve the failed database, copy the verified backup and matching artifacts into their configured paths, confirm ownership/permissions, run migration on a temporary copy, then start privately and smoke-test. Never reset or delete the current database to repair a migration.
 
-For rollback, stop traffic, preserve logs and failed files, restore the pre-upgrade database/artifact snapshot, reinstall the last compatible application version, and execute `ROLLBACK_CHECKLIST.md`. A v5 database is not promised compatible with older code; restore the matching pre-upgrade backup instead of downgrading in place.
+For rollback, stop traffic, preserve logs and failed files, restore the pre-upgrade database/artifact snapshot, reinstall the last compatible application version, and execute `ROLLBACK_CHECKLIST.md`. A v6 database is not promised compatible with older code; restore the matching pre-upgrade backup instead of downgrading in place.
+
+Schema v6 adds provider configuration, route, capability, discovery-cache, and non-secret job
+snapshot tables without deleting existing jobs. Ciphertext is useless without the separately
+backed-up master key. Follow `docs/LLM_PROVIDERS.md` for API-key and master-key rotation; never put a
+master key or plaintext provider key in a database backup.

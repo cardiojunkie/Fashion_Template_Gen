@@ -595,7 +595,21 @@ def _is_public_address(address: IpAddress) -> bool:
     return True
 
 
-def _validated_destination(url: str, resolver: Resolver) -> tuple[str, tuple[IpAddress, ...]]:
+def _is_allowed_development_address(address: IpAddress) -> bool:
+    return (address.is_private or address.is_loopback) and not (
+        address.is_link_local
+        or address.is_unspecified
+        or address.is_multicast
+        or address.is_reserved
+    )
+
+
+def _validated_destination(
+    url: str,
+    resolver: Resolver,
+    *,
+    allowed_private_hosts: frozenset[str] = frozenset(),
+) -> tuple[str, tuple[IpAddress, ...]]:
     if any(ord(character) < 32 or ord(character) == 127 for character in url):
         raise _DownloadFailure("URL contains invalid control characters.")
     try:
@@ -622,11 +636,19 @@ def _validated_destination(url: str, resolver: Resolver) -> tuple[str, tuple[IpA
             host = raw_host.encode("idna").decode("ascii")
         except UnicodeError as exc:
             raise _DownloadFailure("URL hostname is invalid.") from exc
-        if (
+        local_name = (
             host in BLOCKED_HOSTS
             or host.endswith(".localhost")
             or host.endswith(".local")
-        ):
+        )
+        metadata_name = host in {
+            "instance-data",
+            "instance-data.ec2.internal",
+            "metadata",
+            "metadata.azure.internal",
+            "metadata.google.internal",
+        }
+        if local_name and (host not in allowed_private_hosts or metadata_name):
             raise _DownloadFailure("Local and metadata destinations are not allowed.")
         try:
             resolved = tuple(resolver(host, port or (443 if parsed.scheme == "https" else 80)))
@@ -644,7 +666,12 @@ def _validated_destination(url: str, resolver: Resolver) -> tuple[str, tuple[IpA
         host = raw_host
         addresses = [literal]
 
-    if any(not _is_public_address(address) for address in addresses):
+    private_allowed = host in allowed_private_hosts
+    if any(
+        not _is_public_address(address)
+        and (not private_allowed or not _is_allowed_development_address(address))
+        for address in addresses
+    ):
         raise _DownloadFailure("Private, local, and non-public destinations are not allowed.")
     return host, tuple(dict.fromkeys(addresses))
 
@@ -668,6 +695,7 @@ def _validate_connected_peer(
     expected_address: IpAddress,
     *,
     required: bool,
+    allow_private: bool = False,
 ) -> None:
     stream = response.extensions.get("network_stream")
     if stream is None or not hasattr(stream, "get_extra_info"):
@@ -689,7 +717,7 @@ def _validate_connected_peer(
         if isinstance(expected_address, ipaddress.IPv6Address)
         else None
     )
-    if not _is_public_address(peer) or not (
+    if (not allow_private and not _is_public_address(peer)) or not (
         peer == expected_address or peer_v4 == expected_address or expected_v4 == peer
     ):
         raise _DownloadFailure("Connected server address failed SSRF validation.")

@@ -112,7 +112,11 @@ class InvalidLLMResponse(LLMError):
 
 def sanitize_error(error: BaseException | str, secrets: Sequence[str] = ()) -> str:
     message = " ".join(str(error).split())
-    message = re.sub(r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: [redacted]", message)
+    message = re.sub(
+        r"(?i)\bauthorization\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]+",
+        "Authorization: [redacted]",
+        message,
+    )
     message = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]", message)
     message = re.sub(
         r"(?i)\b(api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+",

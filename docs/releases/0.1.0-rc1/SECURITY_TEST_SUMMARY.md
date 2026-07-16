@@ -1,11 +1,16 @@
 # Security and reliability test summary — 0.1.0-rc1
 
-Default tests are offline. The complete suite passed 327 tests with one explicitly opt-in live OpenAI test skipped.
+Default tests are offline. The complete suite passed 378 tests with one explicitly opt-in live OpenAI test skipped.
 
 - Workbook: type deception, malformed ZIP/XML, encryption, macros, external links, formulas, Excel errors, member/expanded/file/row/column/cell limits, identifiers, and formula-safe export.
 - ZIP/image: traversal, absolute paths, hidden files, symlinks, nesting, flat-name collisions, file/member/expanded limits, magic/extension mismatch, malformed data, decompression/pixel/dimension limits, animation, unsupported modes, EXIF, transparency, CMYK, and deterministic JPEG/ZIP output.
 - URL: non-web schemes, credentials, loopback/private/link-local/multicast/reserved/transition ranges, hostile DNS, redirect revalidation, IP pinning and peer verification, content type/length/body limits, connect/read/total deadlines, Retry-After, retry policy, per-host/total concurrency, ordinal preservation, and per-URL isolation.
 - Model boundary: delimited injection strings, strict applicable schema, unknown SKU/header/image rejection, invalid enum/evidence/status rejection, unsupported technical claims, request/version metadata, and cache invalidation.
+- Custom providers: protocol/auth/header validation, safe URL normalization, public/private endpoint
+  policy, redirect/DNS/TLS/timeout/HTTP/malformed/size classification, discovery deduplication/cache,
+  exact text/structured/blue-square diagnostics, independent route activation/staleness, v5→v6
+  migration, AES-GCM rotation/preservation/clear, job snapshots, UI masking, and plaintext-secret
+  absence.
 - Data safety: secret and authorization redaction, raw-secret absence from requests/errors/SQLite, formula-safe CMS/QC/report values, root-scoped idempotent cleanup, active-job protection, and durable cleanup disabled pending approval.
 - Reliability: bounded model concurrency, persistent call circuit, partial failure, failure-only retry, interrupted and cancelled resume, no duplicate successful calls, successful partial QC export, SQLite migration/backup/reopen, and cached-result revalidation.
 

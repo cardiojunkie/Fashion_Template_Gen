@@ -28,6 +28,14 @@ python -m fashion_cms.registry config/attribute_registry.xlsx
 
 Do not invent values or use `attributes__other_information` as a fallback.
 
+## LLM Providers
+
+Use **LLM Providers** to save an OpenAI-compatible endpoint, fetch or manually enter models, run
+text/structured/vision compatibility tests, and explicitly activate independent vision and catalog
+routes. The password field is always blank on edit. Model/provider changes stale tests and caches;
+retest before activation. Full secret modes, URL rules, local-provider limitations, cost warnings,
+key rotation, retirement, and troubleshooting are in `docs/LLM_PROVIDERS.md`.
+
 ## Job History and release readiness
 
 Job History shows modes, planned/attempted calls, failures, cache hits, cancellation, artifacts, and supported retry/resume actions. Extraction retries after restart require the same validated inputs because image bytes are not stored. Release Readiness shows every mandatory gate; blocked or not-run gates prevent a production-ready claim.

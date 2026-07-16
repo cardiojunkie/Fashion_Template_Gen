@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import streamlit as st
+from pydantic import SecretStr
 
 from fashion_cms.database import InvalidJobEdit, InvalidStateTransition, JobDatabase
 from fashion_cms.evaluation import load_thresholds
@@ -13,6 +14,8 @@ from fashion_cms.config import (
     usage_cost,
 )
 from fashion_cms.catalog_service import (
+    CONTENT_PROMPT_VERSION,
+    CONTENT_SCHEMA_VERSION,
     build_cms_workbook,
     build_qc_report,
     fake_catalog_client,
@@ -34,6 +37,28 @@ from fashion_cms.image_downloader import (
 from fashion_cms.image_service import open_oriented_image, parse_uploaded_images
 from fashion_cms.jobs import JobService, summarize_job_usage
 from fashion_cms.llm_service import LLMError, LLMSettings, OpenAIResponsesClient
+from fashion_cms.provider_service import (
+    AuthenticationMode,
+    EndpointPolicy,
+    FailureCategory,
+    ModelRoute,
+    ProviderDraft,
+    ProviderProtocol,
+    ProviderRequestError,
+    ProviderStore,
+    RoutePurpose,
+    SecretStorageMode,
+    create_adapter,
+    discover_models,
+    encrypted_mode_available,
+    endpoint_url,
+    provider_public_row,
+    provider_secret_available,
+    resolve_provider_secret,
+    test_structured_output,
+    test_text_connection,
+    test_vision,
+)
 from fashion_cms.models import (
     AnalysisMode,
     JobStatus,
@@ -75,6 +100,7 @@ DEFAULT_DATABASE_PATH = ROOT / "data" / "fashion_cms.sqlite3"
 PRICING_PATH = ROOT / "config" / "model_pricing.json"
 THRESHOLDS_PATH = ROOT / "config" / "evaluation_thresholds.json"
 RELEASE_REPORT_PATH = ROOT / "docs" / "releases" / "0.1.0-rc1" / "release-gates.json"
+PROVIDER_SECRETS_STATE = "llm_provider_session_secrets"
 registry = load_registry(ROOT / "config" / "attribute_registry.xlsx")
 set_names = {
     row.attribute_set_id: row.attribute_set_name for row in registry.attribute_sets
@@ -108,6 +134,14 @@ def get_database(path: str) -> JobDatabase:
 def job_database() -> JobDatabase:
     path = os.environ.get("FASHION_CMS_DB_PATH", str(DEFAULT_DATABASE_PATH))
     return get_database(path)
+
+
+def provider_store() -> ProviderStore:
+    return ProviderStore(job_database())
+
+
+def provider_session_secrets() -> dict[str, object]:
+    return st.session_state.setdefault(PROVIDER_SECRETS_STATE, {})
 
 
 def _source_digest(
@@ -197,15 +231,26 @@ def cms_workbook_page() -> None:
         f"{set_names[attribute_set]} · extract, review canonical facts, generate factual copy, "
         "and export separate CMS and QC workbooks."
     )
+    active_vision_route = provider_store().active_route(RoutePurpose.VISION_EXTRACTION)
+    execution_options = ["Fake (offline)", "OpenAI Responses API environment (legacy)"]
+    if active_vision_route is not None:
+        execution_options.append("Active configured provider route (live)")
     execution_mode = st.radio(
         "Extraction client",
-        ("Fake (offline)", "OpenAI Responses API (live)"),
+        tuple(execution_options),
         horizontal=True,
     )
     if settings_error:
         st.error(settings_error)
-    elif execution_mode.endswith("(live)") and not llm_settings.enabled:
+    elif execution_mode == "OpenAI Responses API environment (legacy)" and not llm_settings.enabled:
         st.info(llm_settings.disabled_reason)
+    elif execution_mode == "Active configured provider route (live)":
+        assert active_vision_route is not None
+        active_provider = provider_store().get_provider(active_vision_route.provider_id)
+        if not provider_secret_available(
+            active_provider, session_secrets=provider_session_secrets()
+        ):
+            st.error("The active vision provider API key is unavailable in this session.")
     workbook_upload = st.file_uploader("Input workbook", type=["xlsx"])
     image_uploads = st.file_uploader(
         "Product images or ZIP files",
@@ -280,9 +325,19 @@ def cms_workbook_page() -> None:
                 (
                     _fake_model(attribute_set)
                     if execution_mode == "Fake (offline)"
-                    else llm_settings.model or "unconfigured"
+                    else (
+                        active_vision_route.model_id
+                        if execution_mode == "Active configured provider route (live)"
+                        and active_vision_route is not None
+                        else llm_settings.model or "unconfigured"
+                    )
                 ),
-                llm_settings.image_detail,
+                (
+                    active_vision_route.image_detail or "high"
+                    if execution_mode == "Active configured provider route (live)"
+                    and active_vision_route is not None
+                    else llm_settings.image_detail
+                ),
                 *_contract_versions(attribute_set),
             )
         )
@@ -300,9 +355,18 @@ def cms_workbook_page() -> None:
                 "Creating a job stores normalized rows, image metadata, and hashes. "
                 "Creation never makes an API request."
             )
+            configured_provider_unavailable = False
+            active_provider = None
+            if execution_mode == "Active configured provider route (live)":
+                assert active_vision_route is not None
+                active_provider = provider_store().get_provider(active_vision_route.provider_id)
+                configured_provider_unavailable = not provider_secret_available(
+                    active_provider, session_secrets=provider_session_secrets()
+                )
             live_unavailable = (
-                execution_mode.endswith("(live)") and not llm_settings.enabled
-            )
+                execution_mode == "OpenAI Responses API environment (legacy)"
+                and not llm_settings.enabled
+            ) or configured_provider_unavailable
             if st.button(
                 "Create persistent job",
                 type="primary",
@@ -310,6 +374,29 @@ def cms_workbook_page() -> None:
             ):
                 try:
                     prompt_version, schema_version = _contract_versions(attribute_set)
+                    selected_model = (
+                        _fake_model(attribute_set)
+                        if execution_mode == "Fake (offline)"
+                        else (
+                            active_vision_route.model_id
+                            if active_vision_route is not None
+                            and execution_mode == "Active configured provider route (live)"
+                            else llm_settings.model
+                        )
+                    )
+                    selected_detail = (
+                        active_vision_route.image_detail or "high"
+                        if active_vision_route is not None
+                        and execution_mode == "Active configured provider route (live)"
+                        else llm_settings.image_detail
+                    )
+                    provider_cache_key = (
+                        f"{active_provider.cache_key}:{active_vision_route.configuration_version}"
+                        if active_provider is not None
+                        and active_vision_route is not None
+                        and execution_mode == "Active configured provider route (live)"
+                        else ""
+                    )
                     job_id = JobService(job_database()).create_job(
                         workbook_result.rows,
                         image_result.images,
@@ -318,12 +405,47 @@ def cms_workbook_page() -> None:
                         registry_version=registry.fingerprint,
                         prompt_version=prompt_version,
                         schema_version=schema_version,
-                        model_identifier=(
-                            _fake_model(attribute_set)
-                            if execution_mode == "Fake (offline)"
-                            else llm_settings.model
+                        model_identifier=selected_model,
+                        image_detail=selected_detail,
+                        provider_cache_key=provider_cache_key,
+                    )
+                    snapshot_store = provider_store()
+                    snapshot_store.record_job_snapshot(
+                        job_id,
+                        RoutePurpose.VISION_EXTRACTION,
+                        provider=active_provider,
+                        display_name=(
+                            active_provider.display_name
+                            if active_provider is not None
+                            else (
+                                "Offline fake client"
+                                if execution_mode == "Fake (offline)"
+                                else "OpenAI environment configuration"
+                            )
                         ),
-                        image_detail=llm_settings.image_detail,
+                        protocol=(
+                            active_provider.protocol.value
+                            if active_provider is not None
+                            else (
+                                "FAKE"
+                                if execution_mode == "Fake (offline)"
+                                else ProviderProtocol.OPENAI_RESPONSES.value
+                            )
+                        ),
+                        base_url_fingerprint=(
+                            active_provider.base_url_fingerprint
+                            if active_provider is not None
+                            else "offline" if execution_mode == "Fake (offline)" else "legacy-openai"
+                        ),
+                        model_id=selected_model or "unconfigured",
+                        provider_configuration_version=(
+                            active_provider.configuration_version if active_provider else 0
+                        ),
+                        adapter_version=(
+                            active_provider.adapter_version if active_provider else "legacy-v1"
+                        ),
+                        prompt_version=prompt_version,
+                        schema_version=schema_version,
                     )
                 except Exception:
                     st.error("The persistent job could not be created safely.")
@@ -531,6 +653,7 @@ def _attribute_controls(
         return
     attribute_set_name = set_names[job.attribute_set]
     fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
+    configured_provider_job = bool(job.context.provider_cache_key)
     stored_items = database.list_work_items(job_id)
     retry_failed = any(item.status == WorkItemStatus.FAILED for item in stored_items)
     action = f"Retry failed {attribute_set_name} items" if retry_failed else (
@@ -544,11 +667,35 @@ def _attribute_controls(
     except ValueError as exc:
         settings = LLMSettings()
         settings_error = str(exc)
-    configured = (job.context.registry_version == registry.fingerprint) and (fake or (
-        settings.enabled
-        and settings.model == job.context.model_identifier
-        and settings.image_detail == job.context.image_detail
-    ))
+    active_route = None
+    active_provider = None
+    provider_secret = None
+    if configured_provider_job:
+        active_route = provider_store().active_route(RoutePurpose.VISION_EXTRACTION)
+        if active_route is not None:
+            active_provider = provider_store().get_provider(active_route.provider_id)
+            provider_secret = resolve_provider_secret(
+                active_provider, session_secrets=provider_session_secrets()
+            )
+    configured = (job.context.registry_version == registry.fingerprint) and (
+        fake
+        or (
+            configured_provider_job
+            and active_route is not None
+            and active_provider is not None
+            and provider_secret is not None
+            and f"{active_provider.cache_key}:{active_route.configuration_version}"
+            == job.context.provider_cache_key
+            and active_route.model_id == job.context.model_identifier
+            and active_route.image_detail == job.context.image_detail
+        )
+        or (
+            not configured_provider_job
+            and settings.enabled
+            and settings.model == job.context.model_identifier
+            and settings.image_detail == job.context.image_detail
+        )
+    )
     confirmed = True
     limits = ResourceLimits.from_env()
     pricing = load_pricing(PRICING_PATH)
@@ -579,6 +726,23 @@ def _attribute_controls(
         )
     if fake:
         st.caption("Offline fake client selected. No network request or API key is used.")
+    elif configured_provider_job:
+        if not configured:
+            st.info(
+                "Live extraction is disabled because the active vision route changed, "
+                "became unavailable, or has no API key in this session."
+            )
+        elif active_provider is not None and active_route is not None:
+            st.caption(
+                f"Provider: {active_provider.display_name} · protocol: "
+                f"{active_provider.protocol.value} · model: {active_route.model_id}."
+            )
+        confirmed = st.checkbox(
+            "I confirm this configured-provider request and the displayed planned request count.",
+            key=f"live_confirm_{job_id}",
+        )
+        if estimated_cost is None:
+            st.caption("Cost unavailable: no approved matching pricing configuration.")
     else:
         if settings_error:
             st.error(settings_error)
@@ -612,7 +776,13 @@ def _attribute_controls(
             f"Processed {done} of {total}: {', '.join(item.represented_skus)}"
         )
 
-    client = fake_attribute_client() if fake else OpenAIResponsesClient(settings)
+    if fake:
+        client = fake_attribute_client()
+    elif configured_provider_job:
+        assert active_provider is not None and active_route is not None
+        client = create_adapter(active_provider, active_route, provider_secret)
+    else:
+        client = OpenAIResponsesClient(settings)
     prompt_version, schema_version = _contract_versions(job.attribute_set)
     try:
         if job.cancel_requested and not retry_failed:
@@ -635,7 +805,7 @@ def _attribute_controls(
             "Inspect failed work items."
         )
     finally:
-        if isinstance(client, OpenAIResponsesClient):
+        if not fake:
             client.close()
     st.rerun()
 
@@ -956,32 +1126,75 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
             for item in review_items
         ).encode()
     ).hexdigest()
-    catalog_state = f"catalog_{job_id}_{decision_digest}"
-    catalogs = st.session_state.get(catalog_state)
     fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
     limits = ResourceLimits.from_env()
     pricing = load_pricing(PRICING_PATH)
     live_ready = True
     live_confirmed = True
     live_settings = None
+    catalog_route = None
+    catalog_provider = None
+    catalog_secret = None
+    configured_provider_job = bool(job.context.provider_cache_key)
     if not fake:
-        try:
-            live_settings = LLMSettings.from_env()
-            live_ready = live_settings.enabled
-        except ValueError as exc:
+        catalog_route = provider_store().active_route(RoutePurpose.CATALOG_COPY)
+        if catalog_route is not None:
+            catalog_provider = provider_store().get_provider(catalog_route.provider_id)
+            try:
+                catalog_secret = resolve_provider_secret(
+                    catalog_provider, session_secrets=provider_session_secrets()
+                )
+            except ValueError:
+                catalog_secret = None
+            live_ready = (
+                catalog_provider is not None
+                and (
+                    catalog_provider.authentication_mode == AuthenticationMode.NO_AUTH
+                    or catalog_secret is not None
+                )
+            )
+            if not live_ready:
+                st.info(
+                    "Activate a tested CATALOG_COPY route with an available API key to "
+                    "generate live catalog copy."
+                )
+        elif configured_provider_job:
             live_ready = False
-            st.error(str(exc))
-        if not live_ready:
-            st.info("Configure OPENAI_API_KEY and OPENAI_MODEL for optional live copy generation.")
+            st.info(
+                "Activate a tested CATALOG_COPY route with an available API key to "
+                "generate live catalog copy."
+            )
+        else:
+            try:
+                live_settings = LLMSettings.from_env()
+                live_ready = live_settings.enabled
+            except ValueError as exc:
+                live_ready = False
+                st.error(str(exc))
+            if not live_ready:
+                st.info(
+                    "Configure OPENAI_API_KEY and OPENAI_MODEL for optional live copy generation."
+                )
         live_confirmed = st.checkbox(
-            "I confirm this text-only OpenAI catalog-copy request.",
+            "I confirm this text-only catalog-copy request, which may incur provider charges.",
             key=f"live_catalog_confirm_{job_id}",
         )
     catalog_model = (
         "phase6-fake"
         if fake
-        else (live_settings.model if live_settings and live_settings.model else "")
+        else (
+            catalog_route.model_id
+            if catalog_route is not None
+            else (live_settings.model if live_settings and live_settings.model else "")
+        )
     )
+    catalog_route_key = (
+        f"{catalog_provider.cache_key}:{catalog_route.configuration_version}"
+        if catalog_provider is not None and catalog_route is not None
+        else catalog_model
+    )
+    catalog_state = f"catalog_{job_id}_{decision_digest}_{sha256(catalog_route_key.encode()).hexdigest()[:16]}"
+    catalogs = st.session_state.get(catalog_state)
     catalog_attempts = len(rows) * 2 * (limits.model_retries + 1)
     catalog_estimate = maximum_job_cost(
         pricing.for_model(catalog_model),
@@ -1015,8 +1228,42 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
         client = fake_catalog_client()
         try:
             if not fake:
-                assert live_settings is not None
-                client = OpenAIResponsesClient(live_settings)
+                if catalog_route is not None:
+                    assert catalog_provider is not None and catalog_route is not None
+                    client = create_adapter(catalog_provider, catalog_route, catalog_secret)
+                else:
+                    assert live_settings is not None
+                    client = OpenAIResponsesClient(live_settings)
+
+            provider_store().record_job_snapshot(
+                job_id,
+                RoutePurpose.CATALOG_COPY,
+                provider=catalog_provider,
+                display_name=(
+                    catalog_provider.display_name
+                    if catalog_provider is not None
+                    else "Offline fake client" if fake else "OpenAI environment configuration"
+                ),
+                protocol=(
+                    catalog_provider.protocol.value
+                    if catalog_provider is not None
+                    else "FAKE" if fake else ProviderProtocol.OPENAI_RESPONSES.value
+                ),
+                base_url_fingerprint=(
+                    catalog_provider.base_url_fingerprint
+                    if catalog_provider is not None
+                    else "offline" if fake else "legacy-openai"
+                ),
+                model_id=catalog_model,
+                provider_configuration_version=(
+                    catalog_provider.configuration_version if catalog_provider else 0
+                ),
+                adapter_version=(
+                    catalog_provider.adapter_version if catalog_provider else "legacy-v1"
+                ),
+                prompt_version=CONTENT_PROMPT_VERSION,
+                schema_version=CONTENT_SCHEMA_VERSION,
+            )
 
             def consume_catalog_call() -> None:
                 if not database.claim_model_call(job_id, limits.calls_per_job):
@@ -1040,7 +1287,7 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
         else:
             st.session_state[catalog_state] = catalogs
         finally:
-            if isinstance(client, OpenAIResponsesClient):
+            if not fake:
                 client.close()
         if catalogs is not None:
             st.rerun()
@@ -1305,6 +1552,439 @@ def image_downloader_page() -> None:
         )
 
 
+def llm_providers_page() -> None:
+    st.title("LLM Providers")
+    st.write(
+        "Custom provider configuration currently supports OpenAI-compatible endpoints. "
+        "Providers using a different API protocol require a dedicated adapter."
+    )
+    st.warning(
+        "This application has no user authentication. Provider management is safe only in a "
+        "private development environment; keep the Codespaces port private."
+    )
+    st.caption(
+        "Connection and capability tests send small API requests and may incur provider charges. "
+        "No customer, catalog, file, web-search, or tool data is used."
+    )
+    policy = EndpointPolicy.from_env()
+    if policy.allow_private or policy.allow_insecure_http:
+        st.error(
+            "Development-only local endpoint access is enabled by server configuration. "
+            "Only explicitly allowlisted hosts are accepted; production ignores these flags."
+        )
+    st.info(
+        "In Codespaces, localhost means the Codespace container—not the user’s Windows computer. "
+        "A model running on the user’s laptop is not automatically reachable from Codespaces."
+    )
+
+    store = provider_store()
+    secrets = provider_session_secrets()
+    providers = store.list_providers(include_retired=True)
+    routes = store.list_routes()
+    st.subheader("Provider list")
+    if providers:
+        st.dataframe(
+            [
+                provider_public_row(
+                    provider,
+                    tuple(route for route in routes if route.provider_id == provider.id),
+                    secret_available=provider_secret_available(
+                        provider, session_secrets=secrets
+                    ),
+                )
+                for provider in providers
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.info("No provider configurations have been saved.")
+
+    selected_id = st.selectbox(
+        "Add or edit provider",
+        ("", *(provider.id for provider in providers)),
+        format_func=lambda identifier: (
+            "Add new provider"
+            if not identifier
+            else next(
+                f"Edit · {provider.display_name}" for provider in providers if provider.id == identifier
+            )
+        ),
+    )
+    selected = store.get_provider(selected_id) if selected_id else None
+    discovered = tuple(st.session_state.get(f"provider_models_{selected_id}", ()))
+
+    if selected is not None:
+        columns = st.columns(3)
+        if columns[0].button(
+            "Disable" if selected.enabled else "Enable",
+            key=f"toggle_provider_{selected.id}",
+        ):
+            store.set_enabled(selected.id, not selected.enabled)
+            st.rerun()
+        clear_confirmed = columns[1].checkbox(
+            "Confirm clear API key",
+            key=f"clear_provider_confirm_{selected.id}",
+        )
+        if columns[1].button(
+            "Clear API key",
+            disabled=not clear_confirmed,
+            key=f"clear_provider_{selected.id}",
+        ):
+            secrets.pop(selected.id, None)
+            store.clear_secret(selected.id)
+            st.rerun()
+        retire_confirmed = columns[2].checkbox(
+            "Confirm delete/retire",
+            key=f"retire_provider_confirm_{selected.id}",
+        )
+        if columns[2].button(
+            "Delete / retire",
+            disabled=not retire_confirmed,
+            key=f"retire_provider_{selected.id}",
+        ):
+            store.delete_or_retire(selected.id)
+            secrets.pop(selected.id, None)
+            st.rerun()
+
+    encrypted_available = encrypted_mode_available()
+    storage_options = [SecretStorageMode.SESSION_ONLY, SecretStorageMode.ENV_REFERENCE]
+    if encrypted_available or (
+        selected is not None
+        and selected.secret_storage_mode == SecretStorageMode.ENCRYPTED_DATABASE
+    ):
+        storage_options.append(SecretStorageMode.ENCRYPTED_DATABASE)
+    provider_routes = store.list_routes(selected.id) if selected is not None else ()
+    vision_route = next(
+        (route for route in provider_routes if route.purpose == RoutePurpose.VISION_EXTRACTION),
+        None,
+    )
+    catalog_route = next(
+        (route for route in provider_routes if route.purpose == RoutePurpose.CATALOG_COPY),
+        None,
+    )
+
+    with st.form(f"llm_provider_form_{selected_id or 'new'}"):
+        name = st.text_input("Provider Name", value=selected.display_name if selected else "")
+        protocol = st.selectbox(
+            "Protocol",
+            tuple(ProviderProtocol),
+            index=(
+                tuple(ProviderProtocol).index(selected.protocol) if selected is not None else 0
+            ),
+            format_func=lambda value: value.value,
+        )
+        base_url = st.text_input(
+            "Base URL",
+            value=selected.base_url if selected else "https://api.openai.com/v1",
+            help="Enter the API base only. The adapter adds known endpoint paths; /v1 is never added automatically.",
+        )
+        authentication = st.selectbox(
+            "Authentication Mode",
+            tuple(AuthenticationMode),
+            index=(
+                tuple(AuthenticationMode).index(selected.authentication_mode)
+                if selected is not None
+                else 0
+            ),
+            format_func=lambda value: value.value,
+        )
+        api_header = st.text_input(
+            "API key header name",
+            value=selected.api_key_header_name if selected and selected.api_key_header_name else "x-api-key",
+            disabled=authentication != AuthenticationMode.API_KEY_HEADER,
+        )
+        storage = st.selectbox(
+            "Secret Storage Mode",
+            tuple(storage_options),
+            index=(
+                tuple(storage_options).index(selected.secret_storage_mode)
+                if selected is not None and selected.secret_storage_mode in storage_options
+                else 0
+            ),
+            format_func=lambda value: value.value,
+            disabled=authentication == AuthenticationMode.NO_AUTH,
+        )
+        if storage == SecretStorageMode.SESSION_ONLY:
+            st.caption(
+                "SESSION_ONLY is the default. The key stays in this server session only and is "
+                "lost on session/server restart; unattended resume then requires re-entry."
+            )
+        elif storage == SecretStorageMode.ENCRYPTED_DATABASE and not encrypted_available:
+            st.error(
+                "ENCRYPTED_DATABASE is unavailable without a valid server master key and, in "
+                "production, application authentication."
+            )
+        environment_name = st.text_input(
+            "Environment Secret Name",
+            value=(
+                selected.secret_reference
+                if selected
+                and selected.secret_storage_mode == SecretStorageMode.ENV_REFERENCE
+                and selected.secret_reference
+                else ""
+            ),
+            disabled=storage != SecretStorageMode.ENV_REFERENCE,
+        )
+        api_key = st.text_input(
+            "API Key",
+            type="password",
+            value="",
+            help="Blank while editing keeps the existing encrypted or session key. The key is never sent back to this field.",
+            disabled=(
+                authentication == AuthenticationMode.NO_AUTH
+                or storage == SecretStorageMode.ENV_REFERENCE
+            ),
+        )
+        request_timeout = st.number_input(
+            "Request Timeout",
+            min_value=1.0,
+            max_value=300.0,
+            value=float(selected.request_timeout if selected else 30.0),
+        )
+        if selected is not None:
+            st.caption(
+                f"Effective endpoints · models: {endpoint_url(selected.base_url, 'models')} · "
+                f"generation: {endpoint_url(selected.base_url, 'responses' if selected.protocol == ProviderProtocol.OPENAI_RESPONSES else 'chat/completions')}"
+            )
+        model_choice = st.selectbox(
+            "Discovered model (optional)",
+            discovered,
+            index=None,
+            placeholder=(
+                "Select a discovered model" if discovered else "Fetch Models or enter IDs manually"
+            ),
+        )
+        vision_model = st.text_input(
+            "Vision Model",
+            value=vision_route.model_id if vision_route else "",
+            help="Manual model-ID fallback remains available when listing is unsupported.",
+        )
+        catalog_model = st.text_input(
+            "Catalog/Text Model",
+            value=catalog_route.model_id if catalog_route else "",
+            help="The same model may be used for both purposes.",
+        )
+        if model_choice:
+            use_for = st.radio(
+                "Use discovered model for",
+                tuple(RoutePurpose),
+                horizontal=True,
+                format_func=lambda value: value.value,
+            )
+            if use_for == RoutePurpose.VISION_EXTRACTION:
+                vision_model = model_choice
+            else:
+                catalog_model = model_choice
+        maximum_output_tokens = st.number_input(
+            "Maximum Output Tokens",
+            min_value=1,
+            max_value=100_000,
+            value=int(
+                max(
+                    vision_route.maximum_output_tokens if vision_route else 1_024,
+                    catalog_route.maximum_output_tokens if catalog_route else 1_024,
+                )
+            ),
+        )
+        image_detail = st.selectbox(
+            "Vision image detail",
+            ("auto", "low", "high"),
+            index=("auto", "low", "high").index(
+                vision_route.image_detail if vision_route and vision_route.image_detail else "high"
+            ),
+        )
+        test_target = st.selectbox(
+            "Text / structured test target",
+            tuple(RoutePurpose),
+            format_func=lambda value: value.value,
+        )
+        confirm_replace = st.checkbox(
+            "Confirm replacement of any currently active route for the selected purpose(s)"
+        )
+        activation_purposes = st.multiselect(
+            "Purposes to activate",
+            tuple(RoutePurpose),
+            format_func=lambda value: value.value,
+        )
+        st.warning("Tests send small requests and may incur provider charges.")
+        actions = st.columns(3)
+        save = actions[0].form_submit_button("Save")
+        fetch = actions[1].form_submit_button("Fetch Models / Refresh")
+        text_test = actions[2].form_submit_button("Test Connection")
+        structured_test = actions[0].form_submit_button("Test Structured Output")
+        vision_test = actions[1].form_submit_button("Test Vision")
+        activate = actions[2].form_submit_button("Save and Activate", type="primary")
+
+    action_requested = any((save, fetch, text_test, structured_test, vision_test, activate))
+    if action_requested:
+        try:
+            saved = store.save_provider(
+                ProviderDraft(
+                    display_name=name,
+                    protocol=protocol,
+                    base_url=base_url,
+                    authentication_mode=authentication,
+                    api_key_header_name=api_header,
+                    secret_storage_mode=storage,
+                    secret_reference=environment_name or None,
+                    request_timeout=request_timeout,
+                ),
+                provider_id=selected.id if selected else None,
+                api_key=api_key or None,
+                policy=policy,
+            )
+            if storage == SecretStorageMode.SESSION_ONLY and api_key:
+                secrets[saved.id] = SecretStr(api_key)
+            elif storage != SecretStorageMode.SESSION_ONLY or (
+                authentication == AuthenticationMode.NO_AUTH
+            ):
+                secrets.pop(saved.id, None)
+            saved_routes = {}
+            if vision_model.strip():
+                saved_routes[RoutePurpose.VISION_EXTRACTION] = store.save_route(
+                    saved.id,
+                    RoutePurpose.VISION_EXTRACTION,
+                    vision_model,
+                    timeout=request_timeout,
+                    maximum_output_tokens=maximum_output_tokens,
+                    image_detail=image_detail,
+                )
+            if catalog_model.strip():
+                saved_routes[RoutePurpose.CATALOG_COPY] = store.save_route(
+                    saved.id,
+                    RoutePurpose.CATALOG_COPY,
+                    catalog_model,
+                    timeout=request_timeout,
+                    maximum_output_tokens=maximum_output_tokens,
+                )
+            saved = store.get_provider(saved.id)
+            secret = resolve_provider_secret(saved, session_secrets=secrets)
+            if saved.authentication_mode != AuthenticationMode.NO_AUTH and secret is None and (
+                fetch or text_test or structured_test or vision_test or activate
+            ):
+                raise ValueError("An API key is required for this action.")
+            target_route = saved_routes.get(test_target)
+            if fetch:
+                discovery_route = target_route or ModelRoute(
+                    id="model-discovery",
+                    purpose=RoutePurpose.CATALOG_COPY,
+                    provider_id=saved.id,
+                    model_id="model-discovery",
+                    active=False,
+                    enabled=True,
+                    timeout=request_timeout,
+                    maximum_output_tokens=64,
+                    image_detail=None,
+                    configuration_version=1,
+                    created_at=saved.created_at,
+                    updated_at=saved.updated_at,
+                )
+                adapter = create_adapter(saved, discovery_route, secret, policy=policy)
+                try:
+                    st.session_state[f"provider_models_{saved.id}"] = discover_models(
+                        store, adapter, refresh=True
+                    )
+                finally:
+                    adapter.close()
+            if text_test or structured_test:
+                if target_route is None:
+                    raise ValueError("Save a model ID for the selected test target first.")
+                adapter = create_adapter(saved, target_route, secret, policy=policy)
+                try:
+                    result = (
+                        test_text_connection(adapter)
+                        if text_test
+                        else test_structured_output(adapter)
+                    )
+                finally:
+                    adapter.close()
+                pricing_model = load_pricing(PRICING_PATH).for_model(target_route.model_id)
+                cost = usage_cost(pricing_model, result.usage)
+                if cost is not None and pricing_model is not None:
+                    result = result.model_copy(
+                        update={"cost": f"{pricing_model.currency} {cost}"}
+                    )
+                store.record_test(saved.id, target_route.model_id, result)
+                st.session_state[f"provider_test_{saved.id}"] = result.public_summary()
+            if vision_test:
+                target_route = saved_routes.get(RoutePurpose.VISION_EXTRACTION)
+                if target_route is None:
+                    raise ValueError("Save a vision model ID before testing vision.")
+                adapter = create_adapter(saved, target_route, secret, policy=policy)
+                try:
+                    result = test_vision(adapter)
+                finally:
+                    adapter.close()
+                pricing_model = load_pricing(PRICING_PATH).for_model(target_route.model_id)
+                cost = usage_cost(pricing_model, result.usage, image_count=1)
+                if cost is not None and pricing_model is not None:
+                    result = result.model_copy(
+                        update={"cost": f"{pricing_model.currency} {cost}"}
+                    )
+                store.record_test(saved.id, target_route.model_id, result)
+                st.session_state[f"provider_test_{saved.id}"] = result.public_summary()
+            if activate:
+                if not activation_purposes:
+                    raise ValueError("Select at least one purpose to activate.")
+                for purpose in activation_purposes:
+                    route = saved_routes.get(purpose)
+                    if route is None:
+                        raise ValueError(f"Save a model ID for {purpose.value} before activation.")
+                    store.activate_route(
+                        route.id,
+                        secret_available=provider_secret_available(
+                            saved, session_secrets=secrets
+                        ),
+                        confirm_replace=confirm_replace,
+                    )
+        except ProviderRequestError as exc:
+            if fetch and exc.category == FailureCategory.UNSUPPORTED_ENDPOINT:
+                st.warning("Model listing unsupported. Enter the model ID manually and test it before activation.")
+            else:
+                st.error(str(exc))
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.success("Provider configuration saved safely.")
+            st.rerun()
+
+    if selected is not None:
+        if result := st.session_state.get(f"provider_test_{selected.id}"):
+            st.subheader("Latest sanitized capability test")
+            st.json(result)
+        st.subheader("Saved routes")
+        pricing = load_pricing(PRICING_PATH)
+        st.dataframe(
+            [
+                {
+                    "Purpose": route.purpose.value,
+                    "Provider": selected.display_name,
+                    "Effective base URL": selected.base_url,
+                    "Protocol": selected.protocol.value,
+                    "Model ID": route.model_id,
+                    "Verified capabilities": store.capability(
+                        selected.id, route.model_id
+                    ).model_dump(mode="json"),
+                    "Last test time": store.capability(
+                        selected.id, route.model_id
+                    ).last_tested_at
+                    or "",
+                    "Secret mode": selected.secret_storage_mode.value,
+                    "Pricing status": (
+                        "Configured and approved"
+                        if pricing.for_model(route.model_id) is not None
+                        else "Cost unavailable"
+                    ),
+                    "Active": route.active,
+                }
+                for route in provider_routes
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+
+
 def attribute_registry_page() -> None:
     st.title("Attribute Registry")
     st.write("Read-only view of the validated CMS attribute registry.")
@@ -1434,6 +2114,10 @@ def job_history_page() -> None:
         f"{cache_hits:,} work item(s) reused deterministic cached results. "
         "Successful items are never repeated by failure-only retry."
     )
+    snapshots = provider_store().job_snapshots(selected_id)
+    if snapshots:
+        st.subheader("Non-secret provider snapshots")
+        st.dataframe(snapshots, hide_index=True, width="stretch")
     if job.cancel_requested:
         st.warning(
             "Cancellation requested: no new work will be scheduled. An already-sent "
@@ -1560,6 +2244,7 @@ page = st.navigation(
         st.Page(cms_workbook_page, title="CMS Generator", default=True),
         st.Page(image_downloader_page, title="Image Downloader"),
         st.Page(attribute_registry_page, title="Attribute Registry"),
+        st.Page(llm_providers_page, title="LLM Providers"),
         st.Page(job_history_page, title="Job History"),
         st.Page(release_readiness_page, title="Release Readiness"),
     ]

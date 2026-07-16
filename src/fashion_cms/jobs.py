@@ -112,6 +112,7 @@ class JobService:
         schema_version: str = RESULT_SCHEMA_VERSION,
         model_identifier: str = MODEL_IDENTIFIER,
         image_detail: str = IMAGE_DETAIL,
+        provider_cache_key: str = "",
         modes: Mapping[str, AnalysisMode | str] | None = None,
         representatives: Mapping[str, str] | None = None,
         job_type: str = "CMS_GENERATION",
@@ -131,6 +132,7 @@ class JobService:
             schema_version=schema_version,
             model_identifier=model_identifier,
             image_detail=image_detail,
+            provider_cache_key=provider_cache_key,
         )
         job_id = self.database.create_job(groups, context, job_type=job_type)
         self.database.transition_job(job_id, JobStatus.VALIDATING)

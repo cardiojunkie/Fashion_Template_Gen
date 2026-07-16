@@ -22,7 +22,7 @@ from fashion_cms.variant_service import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 JOB_STATUSES = tuple(status.value for status in JobStatus)
 ITEM_STATUSES = tuple(status.value for status in WorkItemStatus)
 ANALYSIS_MODES = tuple(mode.value for mode in AnalysisMode)
@@ -262,7 +262,125 @@ MIGRATION_5 = (
     "ALTER TABLE work_items ADD COLUMN provider_retry_count INTEGER NOT NULL DEFAULT 0 "
     "CHECK (provider_retry_count >= 0)",
 )
-MIGRATIONS = (MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5)
+MIGRATION_6 = (
+    "ALTER TABLE jobs ADD COLUMN provider_cache_key TEXT NOT NULL DEFAULT ''",
+    """
+    CREATE TABLE provider_configurations (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        protocol TEXT NOT NULL CHECK (
+            protocol IN ('OPENAI_RESPONSES', 'OPENAI_CHAT_COMPLETIONS')
+        ),
+        base_url TEXT NOT NULL,
+        authentication_mode TEXT NOT NULL CHECK (
+            authentication_mode IN ('BEARER_TOKEN', 'API_KEY_HEADER', 'NO_AUTH')
+        ),
+        api_key_header_name TEXT,
+        secret_storage_mode TEXT NOT NULL CHECK (
+            secret_storage_mode IN ('SESSION_ONLY', 'ENV_REFERENCE', 'ENCRYPTED_DATABASE')
+        ),
+        secret_reference TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        retired INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
+        configuration_version INTEGER NOT NULL DEFAULT 1 CHECK (configuration_version > 0),
+        adapter_version TEXT NOT NULL,
+        request_timeout REAL NOT NULL CHECK (request_timeout > 0 AND request_timeout <= 300),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_tested_at TEXT,
+        last_test_status TEXT NOT NULL DEFAULT 'UNVERIFIED' CHECK (
+            last_test_status IN (
+                'UNVERIFIED', 'TESTING', 'PASSED_TEXT',
+                'PASSED_TEXT_AND_STRUCTURED', 'PASSED_VISION', 'FAILED', 'STALE'
+            )
+        ),
+        last_test_summary_json TEXT
+    )
+    """,
+    """
+    CREATE TABLE provider_routes (
+        id TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL CHECK (purpose IN ('VISION_EXTRACTION', 'CATALOG_COPY')),
+        provider_id TEXT NOT NULL REFERENCES provider_configurations(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        timeout REAL NOT NULL CHECK (timeout > 0 AND timeout <= 300),
+        maximum_output_tokens INTEGER NOT NULL CHECK (
+            maximum_output_tokens > 0 AND maximum_output_tokens <= 100000
+        ),
+        image_detail TEXT CHECK (image_detail IN ('auto', 'low', 'high')),
+        configuration_version INTEGER NOT NULL DEFAULT 1 CHECK (configuration_version > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider_id, purpose)
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX one_active_provider_route_per_purpose
+    ON provider_routes(purpose) WHERE active = 1
+    """,
+    """
+    CREATE TABLE provider_capability_tests (
+        provider_id TEXT NOT NULL REFERENCES provider_configurations(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        provider_configuration_version INTEGER NOT NULL,
+        text_passed INTEGER CHECK (text_passed IN (0, 1)),
+        structured_status TEXT NOT NULL DEFAULT 'NOT_TESTED' CHECK (
+            structured_status IN (
+                'VERIFIED_NATIVE_STRUCTURED_OUTPUT', 'VERIFIED_JSON_OUTPUT',
+                'UNSUPPORTED', 'FAILED', 'NOT_TESTED'
+            )
+        ),
+        vision_status TEXT NOT NULL DEFAULT 'VISION_NOT_TESTED' CHECK (
+            vision_status IN (
+                'VISION_VERIFIED', 'VISION_FAILED',
+                'VISION_UNSUPPORTED', 'VISION_NOT_TESTED'
+            )
+        ),
+        last_tested_at TEXT,
+        summary_json TEXT,
+        PRIMARY KEY (provider_id, model_id, provider_configuration_version)
+    )
+    """,
+    """
+    CREATE TABLE provider_discovery_cache (
+        provider_id TEXT PRIMARY KEY REFERENCES provider_configurations(id) ON DELETE CASCADE,
+        provider_configuration_version INTEGER NOT NULL,
+        model_ids_json TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE job_provider_snapshots (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        purpose TEXT NOT NULL CHECK (purpose IN ('VISION_EXTRACTION', 'CATALOG_COPY')),
+        provider_id TEXT REFERENCES provider_configurations(id) ON DELETE RESTRICT,
+        provider_display_name TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        base_url_fingerprint TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        provider_configuration_version INTEGER NOT NULL,
+        adapter_version TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (
+            job_id, purpose, provider_id, model_id,
+            provider_configuration_version, prompt_version, schema_version
+        )
+    )
+    """,
+)
+MIGRATIONS = (
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+    MIGRATION_6,
+)
 
 
 def _now() -> str:
@@ -362,8 +480,9 @@ class JobDatabase:
                 INSERT INTO jobs (
                     id, job_type, attribute_set, product_profile, status,
                     registry_version, prompt_version, schema_version,
-                    model_identifier, image_detail, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    model_identifier, image_detail, provider_cache_key,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     identifier,
@@ -376,6 +495,7 @@ class JobDatabase:
                     context.schema_version,
                     context.model_identifier,
                     context.image_detail,
+                    context.provider_cache_key,
                     now,
                     now,
                 ),
@@ -474,6 +594,7 @@ class JobDatabase:
                 schema_version=row["schema_version"],
                 model_identifier=row["model_identifier"],
                 image_detail=row["image_detail"],
+                provider_cache_key=row["provider_cache_key"],
             ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

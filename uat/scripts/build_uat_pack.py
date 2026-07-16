@@ -267,6 +267,34 @@ def build_checklist() -> None:
             _row("SEC-006", "Limits", "Use safe local test data near configured limits.", "Operator-created fixture", "Upload and observe.", "Limit is clear; app stays responsive; no data is silently truncated."),
         ],
     )
+    _checklist_sheet(
+        workbook,
+        "LLM Providers",
+        [
+            _row("LLM-001", "Provider page", "App is private.", "LLM Providers", "Open the page.", "Provider list/form load; API key field is masked and blank."),
+            _row("LLM-002", "Add provider", "OpenAI-compatible test endpoint available.", "Name, protocol, base URL, session key", "Save without testing.", "Provider is UNVERIFIED and no key appears in the list or database."),
+            _row("LLM-003", "Discovery", "Provider supports model listing.", "Saved provider", "Fetch models, search, and select one.", "Sorted unique IDs appear; none is selected or activated automatically."),
+            _row("LLM-004", "Manual model", "Model listing is unsupported.", "Exact documented model ID", "Enter vision/text model IDs manually.", "Manual IDs save; activation remains blocked until tests pass."),
+            _row("LLM-005", "Text test", "Valid model/key.", "BYO_LLM_OK diagnostic", "Run Test Connection after accepting the charge warning.", "Exact token, auth, model, latency, safe request ID/usage, and unavailable/configured cost are reported."),
+            _row("LLM-006", "Structured test", "Text test passed.", "Fixed two-field schema", "Run Test Structured Output.", "Native or JSON compatibility is recorded; wrong/extra/malformed output fails."),
+            _row("LLM-007", "Vision test", "Vision model configured.", "Generated blue-square image", "Run Test Vision.", "Square/blue structured diagnostic passes without customer data."),
+            _row("LLM-008", "Activation", "Required tests passed.", "Vision and catalog purposes", "Select purposes and Save and Activate.", "Only selected compatible routes activate; replacement requires confirmation."),
+            _row("LLM-009", "Separate routes", "Two tested models/providers available.", "Vision route A, catalog route B", "Activate separately and run one Topwear SKU.", "Each service uses its route; history has non-secret snapshots and no fallback."),
+            _row("LLM-010", "Stale tests", "Active route exists.", "Changed model/timeout/key", "Edit and save.", "Tests become STALE, route deactivates, and cached work is not reused."),
+            _row("LLM-011", "Wrong key", "Provider saved.", "Deliberately invalid test key", "Run text test.", "Sanitized authentication failure; key absent from UI, logs, history, and SQLite."),
+            _row("LLM-012", "Unknown model", "Valid key.", "Nonexistent model ID", "Run tests and try activation.", "Unknown model is sanitized and activation is blocked."),
+            _row("LLM-013", "Text-only model", "Text-capable model available.", "Same model as vision route", "Pass text; fail/skip vision; try activation.", "Catalog may activate after required tests; vision cannot."),
+            _row("LLM-014", "Session restart", "SESSION_ONLY configured.", "Fake test key", "Restart app/server and reopen provider.", "Key is unavailable and must be re-entered; it was never persisted."),
+            _row("LLM-015", "Environment secret", "Test environment variable configured server-side.", "Variable name only", "Save ENV_REFERENCE and test.", "Only the variable name persists; resolved value is never displayed."),
+            _row("LLM-016", "Encrypted secret", "Master key configured; app remains private.", "Fake test key", "Save ENCRYPTED_DATABASE, edit blank, clear explicitly.", "SQLite has ciphertext only; blank preserves; confirmed clear removes it."),
+            _row("LLM-017", "Endpoint blocks", "No request should reach blocked targets.", "HTTP, localhost, private, metadata, credential URL", "Try saving each with secure defaults.", "Every unsafe endpoint is rejected; no TLS-disable control exists."),
+            _row("LLM-018", "Local development", "Both local flags and exact allowlist configured outside production.", "Local test endpoint", "Save/test, then remove a flag and retry.", "Works only with required explicit development settings and strong warning."),
+            _row("LLM-019", "Failure classes", "Mock/development endpoint available.", "401, 403, 404, 429, timeout, TLS, malformed", "Trigger benign test failures.", "Each category is sanitized; no raw body, stack trace, header, or key appears."),
+            _row("LLM-020", "Retirement", "Provider has historical job snapshot.", "Used provider", "Delete/retire it.", "Provider is disabled/retired; history remains readable and non-secret."),
+            _row("LLM-021", "Secret search", "Use only a fake key.", "Unique fake value", "Search logs and SQLite bytes after tests/restart.", "Fake key is absent wherever persistence/logging is forbidden."),
+            _row("LLM-022", "Existing pages", "Provider checks complete.", "CMS, downloader, history", "Run existing offline workflows.", "All Phase 1–8 behavior still works."),
+        ],
+    )
     _checklist_sheet(workbook, "Defects", [])
     _checklist_sheet(
         workbook,

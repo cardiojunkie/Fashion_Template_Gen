@@ -269,7 +269,42 @@ Use only local benign fixtures and private port `8501`.
 6. Confirm unsupported extensions are rejected by the uploader or validator.
 7. Do not test real internal services, credentials, malicious payloads, or public exposure.
 
-## 15. Record defects and sign-off
+## 15. Test LLM provider configuration
+
+Use only a provider-approved test account and fake diagnostic key. Never place a real key in chat,
+Git, a workbook, screenshot, browser URL, or test report. Each diagnostic may incur provider
+charges.
+
+1. Open **LLM Providers** and confirm the API-key field is masked and blank.
+2. Add an OpenAI-compatible provider with its documented protocol and exact base URL. Save it and
+   confirm it remains `UNVERIFIED`.
+3. Click **Fetch Models / Refresh**. Confirm returned IDs are sorted/deduplicated and none is
+   selected automatically. If listing is unsupported, enter model IDs manually.
+4. Run **Test Connection** and confirm exact `BYO_LLM_OK` validation, sanitized identifiers/usage,
+   latency, and cost status.
+5. Run **Test Structured Output** and then **Test Vision** for a vision model. Confirm the latter
+   uses only the generated blue-square image and reports square/blue.
+6. Select and activate `VISION_EXTRACTION`; separately activate the same or another tested model
+   for `CATALOG_COPY`. Confirm replacing an active route requires confirmation.
+7. Process one real Topwear SKU. Confirm Job History records provider/model/version/fingerprint but
+   no API key. Confirm the two services used their selected logical routes and no silent fallback.
+8. Change the model or timeout. Confirm prior tests become stale, activation is removed, and retest
+   is required.
+9. Test an invalid key, nonexistent model, and text-only model. Confirm sanitized failure, blocked
+   activation, and no raw response/key/stack trace.
+10. Restart the app and verify the selected mode: `SESSION_ONLY` loses the key; `ENV_REFERENCE`
+    retains only the variable name; guarded encrypted storage retains ciphertext and never fills
+    the password field.
+11. With secure defaults, confirm HTTP, localhost, private, metadata, embedded-credential, and
+    redirected endpoints are blocked. Test local-provider flags only against an operator-controlled
+    development endpoint and never in production.
+12. Using a unique fake key, search application logs and SQLite bytes. Confirm the fake value is
+    absent wherever plaintext persistence/logging is forbidden.
+13. Retire a provider referenced by a historical job and confirm the snapshot remains readable.
+14. Record all 22 rows on the **LLM Providers** checklist sheet. Detailed expected behavior and
+    troubleshooting are in `docs/LLM_PROVIDERS.md`.
+
+## 16. Record defects and sign-off
 
 1. For every FAIL, add a row to **Defects** with a unique Defect ID, exact steps, actual result,
    expected result, and evidence path.

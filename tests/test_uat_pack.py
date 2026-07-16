@@ -50,6 +50,7 @@ def test_manual_checklist_has_required_sheets_columns_and_status_dropdowns() -> 
             "Image Downloader",
             "Job Recovery",
             "Security Checks",
+            "LLM Providers",
             "Defects",
             "User Sign-Off",
         ]
