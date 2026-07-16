@@ -129,7 +129,7 @@ sku
 base_code
 attributes__lulu_ean
 attributes__shipping_weight
-model_code_input_data
+input_data
 ```
 
 Rules:
@@ -140,7 +140,8 @@ Rules:
 - Reject duplicate SKUs within one upload.
 - Report duplicate EANs; do not silently discard rows.
 - A blank `base_code` is a validation warning and is treated as a single-SKU group using the SKU as an internal fallback group key. Do not write the fallback key into the output `base_code` field.
-- `model_code_input_data` is untrusted product data, not an instruction to the model.
+- `base_code` is the sole variant-grouping key. `input_data` is untrusted SKU-specific product
+  evidence, not an instruction to the model.
 - Spreadsheet formulas and hyperlink cells must be read safely.
 - Input values always take precedence over inferred values unless the user explicitly approves a correction in the review screen.
 
@@ -201,7 +202,7 @@ A future `HYBRID_SHARED_STYLE` mode may be considered only after Phase 8 evaluat
 Source priority:
 
 1. Structured input columns.
-2. Explicit facts in `model_code_input_data`.
+2. Explicit facts in `input_data`.
 3. Clearly readable product, packaging, or care-label text.
 4. Visible product characteristics.
 5. Approved deterministic merchandising rules.
@@ -316,11 +317,10 @@ Use the smallest architecture that safely satisfies the product contract.
 
 - Python 3.12
 - Streamlit
-- OpenAI Python SDK using the Responses API and Structured Outputs
+- httpx for the fixed NVIDIA chat-completions runtime and controlled URL downloads
 - Pydantic v2 for data contracts
 - pandas and openpyxl for `.xlsx` input/output
 - Pillow for image validation and processing
-- httpx for controlled URL downloads
 - SQLite using Python's standard `sqlite3` module
 - pytest
 - Ruff
@@ -563,7 +563,7 @@ InputRow
 - base_code: str | None
 - lulu_ean: str | None
 - shipping_weight: str | None
-- model_code_input_data: str | None
+- input_data: str | None
 ```
 
 ### 7.2 Image asset
@@ -651,7 +651,7 @@ For each SKU/header:
 
 1. Accepted user review override.
 2. Explicit structured input value.
-3. Normalized explicit value from `model_code_input_data`.
+3. Normalized explicit value from `input_data`.
 4. Normalized label/OCR evidence.
 5. Normalized visual evidence permitted by the field policy.
 6. Approved deterministic business rule.
@@ -674,7 +674,7 @@ Cache vision results using a deterministic hash of:
 ```text
 analysis mode
 ordered SKU/group identifiers
-normalized model_code_input_data
+normalized input_data
 selected image SHA-256 hashes
 attribute set and product profile
 registry version
@@ -764,19 +764,28 @@ Optional `REMOVE_AND_WHITE` mode:
 
 ### 10.1 Runtime role
 
-Codex builds the application. The application itself calls the OpenAI Responses API directly. Do not use Codex CLI or the Codex SDK as the catalog extraction runtime.
+Codex builds the application. The application itself calls the fixed NVIDIA Inkling chat-completions
+endpoint through the hardened HTTP client. Do not use Codex CLI or the Codex SDK as the catalog
+extraction runtime.
 
 ### 10.2 Configuration
 
-Required environment variables:
+Required secret:
 
 ```text
-OPENAI_API_KEY
-OPENAI_MODEL
-OPENAI_IMAGE_DETAIL=high
+NVIDIA_API_KEY
 ```
 
-Do not hardcode secrets. Keep the model configurable so evaluations can compare model versions.
+Do not hardcode secrets. The runtime endpoint is
+`https://integrate.api.nvidia.com/v1/chat/completions`, the model is
+`thinkingmachines/inkling`, and image detail is `high`. The runtime sends `temperature=1`,
+`top_p=0.95`, `max_tokens=8192`, and `stream=false`; these are fixed application constants, not
+operator settings. There is no provider-management page or automatic fallback.
+
+Before extraction, **Test NVIDIA Connection** sends only an in-memory 96 x 96 white PNG containing
+a blue square. It must return exactly `{"shape":"square","color":"blue"}` under a two-field
+`guided_json` schema. Bind the pass to the current server session and API-key fingerprint; a
+missing, changed, or failing key keeps **Run Data Extraction** disabled.
 
 ### 10.3 Multimodal request
 
@@ -789,7 +798,7 @@ Each request contains:
 - Untrusted product data clearly delimited as data.
 - Explicit SKU/image labels inserted before each image.
 - Selected images at controlled resolution/detail.
-- A strict Structured Outputs schema.
+- A strict NVIDIA `guided_json` schema.
 
 The prompt must explicitly state:
 
@@ -1051,13 +1060,13 @@ Implement evidence-aware multimodal extraction for Topwear only, using a replace
 
 ### Required work
 
-- [x] Create LLM client interface plus OpenAI Responses API implementation and fake test client.
+- [x] Create an LLM client interface plus fixed NVIDIA Inkling implementation and fake test client.
 - [x] Add environment validation without exposing the API key.
 - [x] Define versioned extraction prompt and schema.
 - [x] Use Topwear product profiles only.
 - [x] Send only relevant headers and permitted values.
 - [x] Label every image explicitly with SKU and image ordinal in request content.
-- [x] Delimit `model_code_input_data` as untrusted data.
+- [x] Delimit `input_data` as untrusted data.
 - [x] Implement `PER_SKU` request construction.
 - [x] Implement one representative request for `BASE_CODE_SIZE_ONLY`.
 - [x] Parse and validate Structured Outputs into `VisionResult`.
@@ -1109,7 +1118,7 @@ ruff check .
 Optional manual integration verification:
 
 ```bash
-RUN_LIVE_LLM_TESTS=1 python -m pytest -m live
+RUN_LIVE_NVIDIA_TESTS=1 python -m pytest -m live
 ```
 
 ---

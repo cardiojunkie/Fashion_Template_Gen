@@ -289,7 +289,7 @@ def model_year_schema_warnings(
 ) -> tuple[str, ...]:
     warnings = []
     for row in rows:
-        text = row.model_code_input_data or ""
+        text = row.input_data or ""
         try:
             document = json.loads(text)
         except (json.JSONDecodeError, TypeError):

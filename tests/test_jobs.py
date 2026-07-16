@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import threading
 from typing import Any
 
 import pytest
@@ -22,7 +23,7 @@ def row(
         row_number=row_number,
         sku=sku,
         base_code=base_code,
-        model_code_input_data=description,
+        input_data=description,
     )
 
 
@@ -216,3 +217,44 @@ def test_interrupted_running_items_can_be_resumed() -> None:
         item.status == WorkItemStatus.COMPLETED
         for item in database.list_work_items(job_id)
     )
+
+
+def test_concurrent_run_does_not_submit_duplicate_work() -> None:
+    database = JobDatabase(":memory:")
+    service = JobService(database)
+    job_id = service.create_job(
+        (row("SKU-1"),),
+        attribute_set="topwear",
+        registry_version="registry-1",
+    )
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    results: list[JobStatus] = []
+    errors: list[BaseException] = []
+
+    def blocking(item: WorkItemRecord) -> Mapping[str, Any]:
+        calls.append(item.key)
+        started.set()
+        assert release.wait(5)
+        return fake_extract(item)
+
+    def run_first() -> None:
+        try:
+            results.append(service.run_job(job_id, blocking).status)
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion below
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    try:
+        assert started.wait(5)
+        assert JobService(database).run_job(job_id, blocking).status == JobStatus.RUNNING
+    finally:
+        release.set()
+        thread.join(5)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results == [JobStatus.COMPLETED]
+    assert len(calls) == 1

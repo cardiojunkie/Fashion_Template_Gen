@@ -452,7 +452,7 @@ def test_model_year_is_recorded_only_as_a_pending_qc_schema_decision() -> None:
     row = InputRow(
         row_number=2,
         sku="0001",
-        model_code_input_data=json.dumps({"model_year": 2026}),
+        input_data=json.dumps({"model_year": 2026}),
     )
 
     qc = load_workbook(

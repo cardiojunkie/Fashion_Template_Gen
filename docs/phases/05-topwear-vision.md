@@ -2,11 +2,11 @@
 
 ## Goal
 
-Implement evidence-aware Topwear extraction only, with replaceable clients, strict structured output, applicable canonical values, both analysis modes, caching, and no default live calls in tests.
+Implement evidence-aware Topwear extraction only, with the fixed NVIDIA Inkling runtime, strict structured output, applicable canonical values, both analysis modes, caching, and no default live calls in tests.
 
 ## Checklist
 
-- [ ] Add a client contract, OpenAI Responses implementation, fake client, and secret-safe environment validation.
+- [x] Add the fixed NVIDIA Inkling client, offline fake client, and secret-safe environment validation.
 - [ ] Version prompt/schema and send only Topwear profile headers and canonical values.
 - [ ] Explicitly label SKU/ordinal before each image and delimit product data as untrusted.
 - [ ] Build exact `PER_SKU` and representative `BASE_CODE_SIZE_ONLY` requests.
@@ -31,5 +31,4 @@ python -m pytest tests/test_llm_service.py tests/test_topwear_extraction.py test
 ruff check .
 ```
 
-Live verification is optional and explicit: `RUN_LIVE_LLM_TESTS=1 python -m pytest -m live`.
-
+Live verification is optional and explicit: `RUN_LIVE_NVIDIA_TESTS=1 python -m pytest -m live`.

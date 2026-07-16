@@ -7,12 +7,10 @@
 - Development mode has no authentication. No public production exposure is allowed until a host, authentication, HTTPS, storage, backup, and monitoring plan is approved.
 - SQLite and in-process bounded workers suit one application instance. There is no distributed/global multi-process request cap or background queue.
 - Cancellation stops new scheduling but cannot retract a provider request already sent. Completed work is preserved and remaining units resume.
-- Custom configuration supports OpenAI-compatible Responses and Chat Completions only. Native
-  Anthropic, Gemini, Bedrock, Vertex, and other protocols require dedicated adapters; compatible
-  endpoints may still lack model listing, structured output, vision, usage, or storage controls.
-- The application has no user authentication. Persistent encrypted website entry is therefore
-  disabled in production, and provider management must remain private until authentication is
-  approved and implemented.
+- Live extraction and catalog copy are fixed to NVIDIA `thinkingmachines/inkling`; there is no
+  alternate endpoint/model, model discovery, local model, browser secret entry, or fallback.
+- The application has no user authentication. Keep the app private and manage `NVIDIA_API_KEY`
+  only in the server environment or deployment secret manager.
 - Uploaded image bytes are not durable in SQLite; a restart-time live extraction retry needs the same validated inputs re-uploaded.
 - Application SSRF checks do not replace infrastructure egress controls. Production should deny metadata/private networks at the network layer.
 - Durable job/artifact deletion is disabled until retention is approved. Temporary content is kept in memory and failure paths discard it immediately.

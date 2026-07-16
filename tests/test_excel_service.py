@@ -7,6 +7,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from fashion_cms.excel_service import (
+    LEGACY_INPUT_COLUMN,
     REQUIRED_COLUMNS,
     SYSTEM_COPY_FIELDS,
     build_blank_cms_workbook,
@@ -56,6 +57,7 @@ def test_leading_zero_identifiers_survive_parse_and_exact_export() -> None:
     assert result.rows[0].sku == "0007"
     assert result.rows[0].base_code == "001"
     assert result.rows[0].attributes__lulu_ean == "0000123"
+    assert result.rows[0].input_data == "shirt"
 
     headers = load_registry(ROOT / "config" / "attribute_registry.xlsx").mappings_by_set["topwear"]
     output = build_blank_cms_workbook(result.rows, headers)
@@ -87,7 +89,7 @@ def test_blank_base_code_and_duplicate_ean_warn_without_blocking() -> None:
     result = parse_input_workbook(
         workbook_bytes(
             [
-                ["SKU-1", None, "0001", 1.2, "shirt"],
+                ["SKU-1", None, "0001", 1.2, None],
                 ["SKU-2", "BASE", "0001", 1.3, "shirt"],
             ]
         ),
@@ -95,7 +97,7 @@ def test_blank_base_code_and_duplicate_ean_warn_without_blocking() -> None:
     )
     assert result.ready
     assert result.rows[0].group_key == "SKU-1"
-    assert {"BLANK_BASE_CODE", "DUPLICATE_EAN"} <= issue_codes(result)
+    assert {"BLANK_BASE_CODE", "BLANK_INPUT_DATA", "DUPLICATE_EAN"} <= issue_codes(result)
 
 
 def test_formulas_numeric_identifiers_and_duplicate_skus_are_critical() -> None:
@@ -129,6 +131,17 @@ def test_unsupported_malformed_or_missing_columns_block(
     result = parse_input_workbook(content, filename)
     assert not result.ready
     assert expected_code in issue_codes(result)
+
+
+def test_legacy_input_header_is_rejected_even_when_input_data_is_present() -> None:
+    headers = (*REQUIRED_COLUMNS, LEGACY_INPUT_COLUMN)
+    result = parse_input_workbook(
+        workbook_bytes([["SKU", "BASE", "0001", 1, "shirt", "legacy"]], headers),
+        "input.xlsx",
+    )
+
+    assert not result.ready
+    assert "LEGACY_COLUMN_NOT_ALLOWED" in issue_codes(result)
 
 
 def test_formula_like_identifier_exports_as_literal_text() -> None:
@@ -198,7 +211,7 @@ def test_export_rejects_values_that_excel_would_silently_truncate() -> None:
         base_code=None,
         attributes__lulu_ean=None,
         attributes__shipping_weight=None,
-        model_code_input_data=None,
+        input_data=None,
     )
     with pytest.raises(ValueError, match="character limit"):
         build_blank_cms_workbook((row,), ("sku",))

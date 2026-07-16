@@ -66,7 +66,7 @@ def row(
         base_code=base_code,
         attributes__lulu_ean=f"00{row_number}",
         attributes__shipping_weight="1.0",
-        model_code_input_data=json.dumps(data),
+        input_data=json.dumps(data),
     )
 
 

@@ -112,7 +112,7 @@ def build_checklist() -> None:
         ("How to run", "Follow uat/README.md in order. Enter Actual Result and attach evidence."),
         ("Status", "Choose NOT STARTED, PASS, FAIL, BLOCKED, or NOT APPLICABLE."),
         ("Failures", "Create a Defect ID, record exact steps and evidence, and do not sign off."),
-        ("Live vision", "Use user-supplied real products. If no approved API setup exists, mark BLOCKED."),
+        ("Live vision", "Use user-supplied real products. If no approved NVIDIA key exists, mark BLOCKED."),
         ("Production", "Passing this workbook does not deploy or approve production automatically."),
     ):
         instructions.append((topic, guidance))
@@ -128,7 +128,7 @@ def build_checklist() -> None:
         "Codespace/browser",
         "Python version",
         "Registry fingerprint",
-        "Extraction mode/model",
+        "NVIDIA connection/model",
         "Port visibility (must be private)",
         "Ground-truth workbook path",
     ):
@@ -157,7 +157,8 @@ def build_checklist() -> None:
             _row("CMS-001", "Startup", "App is running privately.", "Home page", "Open the forwarded URL.", "CMS Generator loads without an exception."),
             _row("CMS-002", "Valid workbook", "Select any set/profile.", "matching *_structural.xlsx", "Upload workbook and matched images.", "Rows and identifiers preview; no critical error."),
             _row("CMS-003", "Duplicate SKU", "App open.", "duplicate_sku.xlsx", "Upload workbook.", "Exact duplicate SKU is reported and processing is blocked."),
-            _row("CMS-004", "Required columns", "App open.", "missing_required_column.xlsx", "Upload workbook.", "Missing column is named and processing is blocked."),
+            _row("CMS-004", "Required columns", "App open.", "missing_required_column.xlsx", "Upload workbook.", "Missing input_data column is named and processing is blocked."),
+            _row("CMS-008", "Legacy column", "App open.", "legacy_input_header.xlsx", "Upload workbook.", "Legacy model_code_input_data is rejected; it is not guessed or converted."),
             _row("CMS-005", "Identifiers", "Use Topwear structural input.", "leading-zero SKU/EAN row", "Preview, export blank CMS, reopen it.", "Leading zeros and base code remain text and unchanged."),
             _row("CMS-006", "Warnings", "App open.", "missing_base_code.xlsx", "Upload workbook.", "Blank base code warns; internal fallback never enters export."),
             _row("CMS-007", "Images", "Use uat/inputs/images.", "matched, missing, orphan, duplicate ordinal", "Upload cases separately.", "Exact files/SKUs/ordinals are identified before any model call."),
@@ -172,14 +173,14 @@ def build_checklist() -> None:
             _row("VAR-003", "Unsafe visual variants", "Use real black solid and blue striped products with same base code.", "User-supplied images and facts", "Keep PER_SKU; inspect warnings, call count, review, and export.", "One call per SKU; no color/pattern/design leakage in either direction."),
             _row("VAR-004", "Mixed modes", "At least two base-code groups.", "One safe size-only and one varying group", "Choose a different mode per group.", "Mixed modes persist and planned request count is exact."),
             _row("VAR-005", "Representative", "Size-only group has unequal image counts.", "User-selected representative", "Change representative, save, restart app.", "Selection is editable and persists; default is deterministic."),
-            _row("VAR-006", "Malformed size", "Structural workbook uploaded.", "model data containing XXL–L", "Inspect grouping and review.", "Malformed size is not silently normalized or used to assert safe grouping."),
+            _row("VAR-006", "Malformed size", "Structural workbook uploaded.", "input_data containing XXL–L", "Inspect grouping and review.", "Malformed size is not silently normalized or used to assert safe grouping."),
         ],
     )
     _checklist_sheet(
         workbook,
         "Review and Catalog Copy",
         [
-            _row("REV-001", "Source priority", "Fake or live extraction complete.", "Explicit input conflicting with visual proposal", "Open review.", "Explicit input wins; conflict and evidence remain visible."),
+            _row("REV-001", "Source priority", "Approved NVIDIA extraction complete.", "Explicit input conflicting with visual proposal", "Open review.", "Explicit input wins; conflict and evidence remain visible."),
             _row("REV-002", "Actions", "Review item exists.", "One item per action", "Accept, edit, reject, and blank; restart app.", "Every decision persists with note/provenance."),
             _row("REV-003", "Enum safety", "Enum review item exists.", "Unsupported value", "Try to accept/edit invalid enum.", "Invalid enum cannot be silently accepted; cell stays blank/review-required."),
             _row("REV-004", "Vision color", "Color absent from input.", "Approved broad visual color", "Accept unchanged image suggestion.", "Suggestion stays review-visible and accepted cell is identified as image-derived."),
@@ -195,7 +196,7 @@ def build_checklist() -> None:
             _row(
                 f"EXPORT-{index:02d}",
                 name,
-                "Complete fake-client workflow and review.",
+                "Complete approved NVIDIA extraction and review.",
                 f"{set_id}_structural.xlsx",
                 "Export CMS and QC separately; reopen CMS; run verify_exports.py.",
                 f"Exact {count} headers/order, expected SKU rows, text identifiers, no internal fields.",
@@ -248,10 +249,10 @@ def build_checklist() -> None:
         workbook,
         "Job Recovery",
         [
-            _row("JOB-001", "Partial failure", "Multi-item fake job.", "One controlled fake failure", "Run job.", "Successful items remain; failed item is isolated."),
+            _row("JOB-001", "Partial failure", "Controlled multi-item job.", "One controlled failure", "Run job.", "Successful items remain; failed item is isolated."),
             _row("JOB-002", "Retry", "Partial failure exists.", "Failed item only", "Retry failed work.", "Successful calls are not repeated."),
             _row("JOB-003", "Restart", "Persisted job exists.", "Same validated inputs", "Stop/restart app and reopen Job History.", "Job state, group choices, errors, and reviews persist."),
-            _row("JOB-004", "Cancellation", "Multi-item job running.", "Fake job", "Request cancellation, then resume.", "Completed results remain; unscheduled work resumes safely."),
+            _row("JOB-004", "Cancellation", "Controlled multi-item job running.", "Approved test job", "Request cancellation, then resume.", "Completed results remain; unscheduled work resumes safely."),
             _row("JOB-005", "Partial export", "Some items succeeded.", "Partial job", "Generate/export successful work.", "CMS has successful rows only; QC lists incomplete SKUs."),
         ],
     )
@@ -269,30 +270,16 @@ def build_checklist() -> None:
     )
     _checklist_sheet(
         workbook,
-        "LLM Providers",
+        "NVIDIA Connection",
         [
-            _row("LLM-001", "Provider page", "App is private.", "LLM Providers", "Open the page.", "Provider list/form load; API key field is masked and blank."),
-            _row("LLM-002", "Add provider", "OpenAI-compatible test endpoint available.", "Name, protocol, base URL, session key", "Save without testing.", "Provider is UNVERIFIED and no key appears in the list or database."),
-            _row("LLM-003", "Discovery", "Provider supports model listing.", "Saved provider", "Fetch models, search, and select one.", "Sorted unique IDs appear; none is selected or activated automatically."),
-            _row("LLM-004", "Manual model", "Model listing is unsupported.", "Exact documented model ID", "Enter vision/text model IDs manually.", "Manual IDs save; activation remains blocked until tests pass."),
-            _row("LLM-005", "Text test", "Valid model/key.", "BYO_LLM_OK diagnostic", "Run Test Connection after accepting the charge warning.", "Exact token, auth, model, latency, safe request ID/usage, and unavailable/configured cost are reported."),
-            _row("LLM-006", "Structured test", "Text test passed.", "Fixed two-field schema", "Run Test Structured Output.", "Native or JSON compatibility is recorded; wrong/extra/malformed output fails."),
-            _row("LLM-007", "Vision test", "Vision model configured.", "Generated blue-square image", "Run Test Vision.", "Square/blue structured diagnostic passes without customer data."),
-            _row("LLM-008", "Activation", "Required tests passed.", "Vision and catalog purposes", "Select purposes and Save and Activate.", "Only selected compatible routes activate; replacement requires confirmation."),
-            _row("LLM-009", "Separate routes", "Two tested models/providers available.", "Vision route A, catalog route B", "Activate separately and run one Topwear SKU.", "Each service uses its route; history has non-secret snapshots and no fallback."),
-            _row("LLM-010", "Stale tests", "Active route exists.", "Changed model/timeout/key", "Edit and save.", "Tests become STALE, route deactivates, and cached work is not reused."),
-            _row("LLM-011", "Wrong key", "Provider saved.", "Deliberately invalid test key", "Run text test.", "Sanitized authentication failure; key absent from UI, logs, history, and SQLite."),
-            _row("LLM-012", "Unknown model", "Valid key.", "Nonexistent model ID", "Run tests and try activation.", "Unknown model is sanitized and activation is blocked."),
-            _row("LLM-013", "Text-only model", "Text-capable model available.", "Same model as vision route", "Pass text; fail/skip vision; try activation.", "Catalog may activate after required tests; vision cannot."),
-            _row("LLM-014", "Session restart", "SESSION_ONLY configured.", "Fake test key", "Restart app/server and reopen provider.", "Key is unavailable and must be re-entered; it was never persisted."),
-            _row("LLM-015", "Environment secret", "Test environment variable configured server-side.", "Variable name only", "Save ENV_REFERENCE and test.", "Only the variable name persists; resolved value is never displayed."),
-            _row("LLM-016", "Encrypted secret", "Master key configured; app remains private.", "Fake test key", "Save ENCRYPTED_DATABASE, edit blank, clear explicitly.", "SQLite has ciphertext only; blank preserves; confirmed clear removes it."),
-            _row("LLM-017", "Endpoint blocks", "No request should reach blocked targets.", "HTTP, localhost, private, metadata, credential URL", "Try saving each with secure defaults.", "Every unsafe endpoint is rejected; no TLS-disable control exists."),
-            _row("LLM-018", "Local development", "Both local flags and exact allowlist configured outside production.", "Local test endpoint", "Save/test, then remove a flag and retry.", "Works only with required explicit development settings and strong warning."),
-            _row("LLM-019", "Failure classes", "Mock/development endpoint available.", "401, 403, 404, 429, timeout, TLS, malformed", "Trigger benign test failures.", "Each category is sanitized; no raw body, stack trace, header, or key appears."),
-            _row("LLM-020", "Retirement", "Provider has historical job snapshot.", "Used provider", "Delete/retire it.", "Provider is disabled/retired; history remains readable and non-secret."),
-            _row("LLM-021", "Secret search", "Use only a fake key.", "Unique fake value", "Search logs and SQLite bytes after tests/restart.", "Fake key is absent wherever persistence/logging is forbidden."),
-            _row("LLM-022", "Existing pages", "Provider checks complete.", "CMS, downloader, history", "Run existing offline workflows.", "All Phase 1–8 behavior still works."),
+            _row("NVIDIA-001", "Fixed runtime", "App is private.", "CMS Generator", "Inspect the extraction setup.", "Endpoint is integrate.api.nvidia.com, model is thinkingmachines/inkling, and no provider/model editor exists."),
+            _row("NVIDIA-002", "Missing key", "NVIDIA_API_KEY is unset.", "Valid workbook and images", "Open CMS Generator and try to continue.", "Connection test reports missing server configuration and Run Data Extraction stays disabled."),
+            _row("NVIDIA-003", "Full connection", "Approved rotated NVIDIA_API_KEY is set.", "Generated 96x96 blue-square diagnostic", "Click Test NVIDIA Connection once.", "One request proves auth, fixed-model access, vision, and exact guided JSON shape=square/color=blue without product data."),
+            _row("NVIDIA-004", "Failure gate", "Safe mock or approved failure setup exists.", "401, 429, timeout, redirect, malformed or mismatched JSON", "Trigger each benign failure separately.", "Failure is sanitized; no key/raw body/stack appears; extraction remains disabled."),
+            _row("NVIDIA-005", "Session binding", "Connection test passed.", "Current key fingerprint", "Restart the server or replace the key, then return to CMS Generator.", "Prior pass is invalid; a fresh Test NVIDIA Connection pass is required."),
+            _row("NVIDIA-006", "Extraction action", "Workbook, images, profile, modes, limits, charge confirmation, and connection gate are valid.", "One real Topwear SKU with input_data and matched image", "Click Run Data Extraction once.", "One persistent job is created and run using that SKU's delimited input_data and labelled image; review is required."),
+            _row("NVIDIA-007", "Audit and secrets", "One NVIDIA extraction completed.", "Job History, logs, SQLite", "Inspect fixed identity/fingerprints and search for the test key.", "Fixed endpoint/model fingerprints are recorded; no API key is displayed, logged, cached, or stored in SQLite."),
+            _row("NVIDIA-008", "Catalog copy", "Extraction review is complete.", "Accepted normalized facts", "Generate catalog copy.", "The same fixed Inkling runtime receives accepted text facts only and no images; missing pricing remains unavailable."),
         ],
     )
     _checklist_sheet(workbook, "Defects", [])
@@ -379,8 +366,13 @@ def build_inputs() -> None:
     )
     _write_input(
         INPUTS / "missing_required_column.xlsx",
-        [("MISSING-COLUMN", "MISSING", "", "No model data column exists.")],
+        [("MISSING-COLUMN", "MISSING", "", "No input_data column exists.")],
         columns=REQUIRED_COLUMNS[:-1],
+    )
+    _write_input(
+        INPUTS / "legacy_input_header.xlsx",
+        [("LEGACY-COLUMN", "LEGACY", "0000000123504", "", "Legacy input")],
+        columns=(*REQUIRED_COLUMNS[:-1], "model_code_input_data"),
     )
 
     workbook = Workbook()

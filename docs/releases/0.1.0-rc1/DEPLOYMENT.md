@@ -8,19 +8,18 @@ Use Python 3.12, install with `python -m pip install -e ".[dev]"`, and start wit
 
 - Python 3.12 and the locked-compatible dependencies documented in `ENVIRONMENT.md`.
 - A non-root service account, writable persistent directory for `FASHION_CMS_DB_PATH` and `data/artifacts`, and read-only application/config files.
-- Server-side `OPENAI_API_KEY`, `OPENAI_MODEL`, and optional `OPENAI_IMAGE_DETAIL`; never browser/UI values. Configure validated `FASHION_CMS_*` limits and approved pricing/threshold files.
-- For custom providers, use `ENV_REFERENCE`. `ENCRYPTED_DATABASE` is disabled in production until
-  real application authentication exists. Back up before the v6 migration and before key rotation;
-  see `docs/LLM_PROVIDERS.md`.
+- Server-side `NVIDIA_API_KEY`; never a browser/UI value. Allow outbound HTTPS only to the fixed
+  `integrate.api.nvidia.com` runtime as required, and configure validated `FASHION_CMS_*` limits
+  plus approved pricing/threshold files. Back up before migration and rotate the key in the
+  deployment secret manager; see `docs/LLM_PROVIDERS.md`.
 - An HTTPS reverse proxy with authentication, request-body/time limits, private-network egress denial, security headers, access-log redaction, and health checks.
 - Monitoring for health, disk, database errors, failed/cancelled jobs, provider errors, call/cost limits, backup age, and dependency vulnerabilities.
 - Scheduled verified backups and, only after retention approval, dry-run-reviewed cleanup.
 
 Do not run Streamlit's development listener as an unauthenticated public service. Production host, authentication, resource sizing, storage, and monitoring providers remain user decisions, so no container or host-specific service file is included.
 
-Private/local LLM endpoints are development-only, require both the appropriate access flag and
-`FASHION_CMS_LLM_ENDPOINT_ALLOWLIST`, and are ignored in production. Network egress policy must
-still block metadata and unapproved internal destinations.
+No private/local or operator-configured model endpoint is supported. Network egress policy must
+still block metadata, private networks, redirects, and unapproved destinations.
 
 ## Upgrade
 

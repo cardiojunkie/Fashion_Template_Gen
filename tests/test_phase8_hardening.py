@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import stat
 import threading
-import time
 from datetime import date
 from decimal import Decimal
 from io import BytesIO
@@ -249,7 +248,7 @@ def test_resource_limits_and_costs_validate_boundaries(
             "base_code",
             "attributes__lulu_ean",
             "attributes__shipping_weight",
-            "model_code_input_data",
+            "input_data",
         ]
     )
     workbook.active.append(["AB", "B", "1", 0, "x"])
@@ -485,13 +484,14 @@ def test_bounded_concurrency_cancellation_and_resume_preserve_completed_work(
     active = 0
     maximum = 0
     lock = threading.Lock()
+    pair_started = threading.Barrier(2)
 
     def bounded(item):
         nonlocal active, maximum
         with lock:
             active += 1
             maximum = max(maximum, active)
-        time.sleep(0.01)
+        pair_started.wait(timeout=5)
         with lock:
             active -= 1
         return fake_extract(item)

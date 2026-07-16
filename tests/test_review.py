@@ -44,7 +44,7 @@ def input_row(data: str, *, sku: str = "0001", row_number: int = 2) -> InputRow:
         base_code="BASE",
         attributes__lulu_ean=f"00{row_number}",
         attributes__shipping_weight="1.0",
-        model_code_input_data=data,
+        input_data=data,
     )
 
 
@@ -56,6 +56,20 @@ def create_extracted_job(
     images: tuple[UploadedImage, ...] = (),
     client=None,
 ) -> str:
+    if not images:
+        images = tuple(
+            UploadedImage(
+                source_name=f"{row.sku}-1.jpg",
+                filename=f"{row.sku}-1.jpg",
+                sku=row.sku,
+                ordinal=1,
+                image_format="jpeg",
+                width=1,
+                height=1,
+                content=f"image-{row.sku}".encode(),
+            )
+            for row in rows
+        )
     job_id = JobService(database).create_job(
         rows,
         images,
@@ -155,11 +169,11 @@ def test_source_priority_and_color_conflict_are_preserved(registry) -> None:
     color = items[("0001", "attributes__color")]
     design = items[("0001", "attributes__design")]
     assert color.proposed_value == "Blue"
-    assert color.source_priority == SourcePriority.MODEL_DATA
+    assert color.source_priority == SourcePriority.INPUT_DATA
     assert color.image_inferred_color is False
     assert "conflicts with image evidence" in (color.conflict or "")
     assert design.proposed_value == "logo"
-    assert design.source_priority == SourcePriority.MODEL_DATA
+    assert design.source_priority == SourcePriority.INPUT_DATA
     assert design.conflict is not None
 
 
@@ -171,7 +185,7 @@ def test_structured_input_keeps_lower_priority_facts_for_other_headers(registry)
 
     assert items["attributes__brand"].source_priority == SourcePriority.STRUCTURED_INPUT
     assert items["attributes__color"].proposed_value == "Blue"
-    assert items["attributes__color"].source_priority == SourcePriority.MODEL_DATA
+    assert items["attributes__color"].source_priority == SourcePriority.INPUT_DATA
 
 
 def test_approved_alias_and_canonical_sources_do_not_create_false_conflict(registry) -> None:

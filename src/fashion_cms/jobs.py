@@ -6,6 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from decimal import Decimal
 import json
+import threading
 import time
 from typing import Any
 
@@ -27,6 +28,10 @@ RESULT_SCHEMA_VERSION = "phase4-fake-result-v1"
 MODEL_IDENTIFIER = "phase4-fake"
 IMAGE_DETAIL = "auto"
 MAX_ERROR_CHARACTERS = 1_000
+
+# ponytail: process-local guard; replace with a SQLite lease before multi-process workers.
+_ACTIVE_JOB_IDS: set[str] = set()
+_ACTIVE_JOB_IDS_LOCK = threading.Lock()
 
 Extractor = Callable[[WorkItemRecord], Mapping[str, Any]]
 ResultValidator = Callable[
@@ -72,7 +77,7 @@ def fake_extract(item: WorkItemRecord) -> Mapping[str, Any]:
 
 
 def _safe_error(exc: Exception) -> str:
-    detail = sanitize_error(str(exc), (os.environ.get("OPENAI_API_KEY", ""),))
+    detail = sanitize_error(str(exc), (os.environ.get("NVIDIA_API_KEY", ""),))
     message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
     return message[:MAX_ERROR_CHARACTERS]
 
@@ -83,11 +88,11 @@ def _safe_request_metadata(value: object, depth: int = 0) -> object:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return sanitize_error(value, (os.environ.get("OPENAI_API_KEY", ""),))
+        return sanitize_error(value, (os.environ.get("NVIDIA_API_KEY", ""),))
     if isinstance(value, Mapping):
         return {
             sanitize_error(
-                str(key), (os.environ.get("OPENAI_API_KEY", ""),)
+                str(key), (os.environ.get("NVIDIA_API_KEY", ""),)
             )[:100]: _safe_request_metadata(item, depth + 1)
             for key, item in list(value.items())[:100]
         }
@@ -178,6 +183,31 @@ class JobService:
         result_validator: ResultValidator | None = None,
         progress: ProgressCallback | None = None,
         limits: ResourceLimits | None = None,
+    ) -> JobRecord:
+        with _ACTIVE_JOB_IDS_LOCK:
+            if job_id in _ACTIVE_JOB_IDS:
+                return self.database.get_job(job_id)
+            _ACTIVE_JOB_IDS.add(job_id)
+        try:
+            return self._run_job(
+                job_id,
+                extractor,
+                result_validator=result_validator,
+                progress=progress,
+                limits=limits,
+            )
+        finally:
+            with _ACTIVE_JOB_IDS_LOCK:
+                _ACTIVE_JOB_IDS.discard(job_id)
+
+    def _run_job(
+        self,
+        job_id: str,
+        extractor: Extractor,
+        *,
+        result_validator: ResultValidator | None,
+        progress: ProgressCallback | None,
+        limits: ResourceLimits | None,
     ) -> JobRecord:
         configuration = limits or ResourceLimits.from_env()
         job = self.database.get_job(job_id)

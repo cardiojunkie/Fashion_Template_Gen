@@ -59,18 +59,23 @@ To stop the application after UAT, return to the terminal and press **Ctrl+C**.
 
 1. Open **CMS Generator**.
 2. Select **Topwear** and its default profile.
-3. Keep **Fake (offline)** selected so no network or paid model call occurs.
-4. Upload `uat/inputs/topwear_structural.xlsx`.
-5. Upload `uat/inputs/images/000123-1.png` and `uat/inputs/images/ABC-12-2.png`.
-6. Confirm `000123` and EAN `0000000123456` retain their leading zeros.
-7. Confirm `ABC-12-2.png` maps to SKU `ABC-12`, ordinal `2`.
-8. Confirm missing-image warnings name the unmatched structural SKUs and do not trigger a
+3. Upload `uat/inputs/topwear_structural.xlsx` and confirm its exact required columns are `sku`,
+   `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `input_data`.
+   `base_code` groups variants; `input_data` is evidence for its SKU. `attributes__model` remains
+   a CMS output field and is not a replacement input column.
+4. Upload `uat/inputs/images/000123-1.png` and `uat/inputs/images/ABC-12-2.png`.
+5. Confirm `000123` and EAN `0000000123456` retain their leading zeros.
+6. Confirm `ABC-12-2.png` maps to SKU `ABC-12`, ordinal `2`.
+7. Confirm missing-image warnings name the unmatched structural SKUs and do not trigger a
    model call.
-9. Download the blank CMS workbook and confirm it has exactly 45 headers and no debug columns.
-10. Upload `uat/inputs/duplicate_sku.xlsx`. Confirm the duplicate SKU is named and processing
+8. Download the blank CMS workbook and confirm it has exactly 45 headers, retains
+   `attributes__model`, and has no debug columns.
+9. Upload `uat/inputs/duplicate_sku.xlsx`. Confirm the duplicate SKU is named and processing
+   is blocked.
+10. Upload `uat/inputs/missing_required_column.xlsx`. Confirm `input_data` is named and processing
     is blocked.
-11. Upload `uat/inputs/missing_required_column.xlsx`. Confirm the missing column is named and
-    processing is blocked.
+11. Upload `uat/inputs/legacy_input_header.xlsx`. Confirm `model_code_input_data` is explicitly
+    rejected and is not guessed or converted.
 12. Upload `uat/inputs/missing_base_code.xlsx`. Confirm it produces an actionable warning; if
     exported, the base-code cell stays blank.
 13. Upload `uat/inputs/formula_like_text.xlsx`. Confirm formula-like text is treated as data and
@@ -104,7 +109,7 @@ To stop the application after UAT, return to the terminal and press **Ctrl+C**.
 6. Confirm the group starts in `PER_SKU`.
 7. Select `BASE_CODE_SIZE_ONLY`, select or confirm the representative SKU, and save.
 8. Confirm the planned vision-request count becomes `1` for that group.
-9. Run fake extraction first, review, generate copy, and export.
+9. Pass **Test NVIDIA Connection**, run extraction, review, generate copy, and export.
 10. Confirm eligible shared visual fields are consistent.
 11. Confirm SKU, EAN, base code, shipping weight, model, and size remain specific to each row.
 
@@ -126,23 +131,25 @@ To stop the application after UAT, return to the terminal and press **Ctrl+C**.
 
 ## 7. Test real vision extraction
 
-Do this only after approved credentials, model IDs, prices, and ground truth are available.
+Do this only after an approved rotated NVIDIA key, pricing decision, and ground truth are available.
 
 1. Copy `real_product_ground_truth_template.xlsx` to a working file.
 2. Enter at least one real product for every attribute set and every Men's Accessories profile.
 3. Record each expected canonical value or explicitly mark **expected blank**.
 4. Record the evidence type and obtain reviewer approval independently of model output.
-5. Configure the approved server-side API key/model. Never enter a secret in the browser,
+5. Configure `NVIDIA_API_KEY` server-side. Never enter a secret in the browser,
    workbook, screenshot, or report.
-6. Restart the app, select **OpenAI Responses API (live)**, and confirm the displayed model.
-7. Upload one set/profile at a time and explicitly confirm each live run.
-8. Compare every proposed value with approved ground truth.
-9. Record incorrect, unsupported, and unexpectedly blank results. High confidence is not proof.
-10. If no approved live setup exists, mark these tests **BLOCKED**, never **PASS**.
+6. Restart the app and confirm the displayed fixed model is `thinkingmachines/inkling`.
+7. Click **Test NVIDIA Connection** and confirm the generated blue-square guided-JSON diagnostic
+   passes before any product extraction is enabled.
+8. Upload one set/profile at a time and click **Run Data Extraction** explicitly for each run.
+9. Compare every proposed value with approved ground truth.
+10. Record incorrect, unsupported, and unexpectedly blank results. High confidence is not proof.
+11. If no approved live setup exists, mark these tests **BLOCKED**, never **PASS**.
 
 ## 8. Test review behavior
 
-1. Complete a fake or approved live extraction that creates review items.
+1. Complete an approved NVIDIA extraction that creates review items.
 2. Confirm explicit input beats a conflicting model proposal.
 3. Confirm the conflict, evidence type/reference, and proposal stay visible.
 4. Test **Accept**, **Edit**, **Reject**, and **Blank** on separate items.
@@ -166,7 +173,7 @@ Do this only after approved credentials, model IDs, prices, and ground truth are
 
 ## 10. Export and verify every attribute set
 
-For each set, complete the offline fake workflow, review, download the CMS workbook and separate
+For each set, complete the approved NVIDIA workflow, review, download the CMS workbook and separate
 QC report, then run the verifier. Use the matching original structural workbook.
 
 Example for Topwear:
@@ -244,16 +251,16 @@ For each profile:
 
 ## 13. Test job recovery
 
-1. Create a multi-item fake extraction job.
-2. Use the existing deterministic test/failure path documented by the operator; do not cause a
-   paid live failure merely for UAT.
+1. Create a multi-item extraction job only after the NVIDIA connection gate passes.
+2. Use an operator-controlled mock/failure environment or automated test for deterministic failure;
+   do not cause a paid live failure merely for UAT.
 3. Confirm completed items remain after one controlled failure.
 4. Retry only failed items and confirm successful calls are not repeated.
 5. Restart the app.
 6. Open **Job History** and confirm the job, modes, representative, errors, and reviews persist.
 7. Resume unfinished work using the same validated inputs when requested.
 8. Export successful partial work and confirm QC names incomplete SKUs.
-9. Start another multi-item fake job and request cancellation.
+9. Start another controlled multi-item job and request cancellation.
 10. Confirm completed results remain and unscheduled items can resume.
 
 ## 14. Run benign security checks
@@ -269,40 +276,33 @@ Use only local benign fixtures and private port `8501`.
 6. Confirm unsupported extensions are rejected by the uploader or validator.
 7. Do not test real internal services, credentials, malicious payloads, or public exposure.
 
-## 15. Test LLM provider configuration
+## 15. Test the NVIDIA connection gate
 
-Use only a provider-approved test account and fake diagnostic key. Never place a real key in chat,
-Git, a workbook, screenshot, browser URL, or test report. Each diagnostic may incur provider
-charges.
+Use only an approved rotated NVIDIA key. Never place it in chat, Git, a workbook, screenshot,
+browser URL, or test report. Each live diagnostic may incur a provider charge.
 
-1. Open **LLM Providers** and confirm the API-key field is masked and blank.
-2. Add an OpenAI-compatible provider with its documented protocol and exact base URL. Save it and
-   confirm it remains `UNVERIFIED`.
-3. Click **Fetch Models / Refresh**. Confirm returned IDs are sorted/deduplicated and none is
-   selected automatically. If listing is unsupported, enter model IDs manually.
-4. Run **Test Connection** and confirm exact `BYO_LLM_OK` validation, sanitized identifiers/usage,
-   latency, and cost status.
-5. Run **Test Structured Output** and then **Test Vision** for a vision model. Confirm the latter
-   uses only the generated blue-square image and reports square/blue.
-6. Select and activate `VISION_EXTRACTION`; separately activate the same or another tested model
-   for `CATALOG_COPY`. Confirm replacing an active route requires confirmation.
-7. Process one real Topwear SKU. Confirm Job History records provider/model/version/fingerprint but
-   no API key. Confirm the two services used their selected logical routes and no silent fallback.
-8. Change the model or timeout. Confirm prior tests become stale, activation is removed, and retest
-   is required.
-9. Test an invalid key, nonexistent model, and text-only model. Confirm sanitized failure, blocked
-   activation, and no raw response/key/stack trace.
-10. Restart the app and verify the selected mode: `SESSION_ONLY` loses the key; `ENV_REFERENCE`
-    retains only the variable name; guarded encrypted storage retains ciphertext and never fills
-    the password field.
-11. With secure defaults, confirm HTTP, localhost, private, metadata, embedded-credential, and
-    redirected endpoints are blocked. Test local-provider flags only against an operator-controlled
-    development endpoint and never in production.
-12. Using a unique fake key, search application logs and SQLite bytes. Confirm the fake value is
-    absent wherever plaintext persistence/logging is forbidden.
-13. Retire a provider referenced by a historical job and confirm the snapshot remains readable.
-14. Record all 22 rows on the **LLM Providers** checklist sheet. Detailed expected behavior and
-    troubleshooting are in `docs/LLM_PROVIDERS.md`.
+1. With `NVIDIA_API_KEY` unset, open **CMS Generator**. Confirm the connection test reports missing
+   server configuration and **Run Data Extraction** is disabled.
+2. Set `NVIDIA_API_KEY` server-side, restart privately, and confirm the displayed endpoint/model are
+   `https://integrate.api.nvidia.com/v1/chat/completions` and `thinkingmachines/inkling`. Confirm no
+   provider, endpoint, or model editor exists.
+3. Click **Test NVIDIA Connection** once. Confirm it sends only the generated 96 x 96 white image
+   with a blue square and requires exactly `shape=square` and `color=blue` under guided JSON.
+4. Confirm a pass enables extraction only for the current server session/key fingerprint. Restart
+   or rotate the key and confirm a fresh pass is required.
+5. In an operator-controlled mock or automated test, exercise 401, 429, timeout, redirect,
+   malformed JSON, extra JSON fields, and wrong shape/color. Confirm each failure is sanitized and
+   keeps extraction disabled.
+6. Process one real Topwear SKU with nonblank `input_data` and a matched image. Click **Run Data
+   Extraction** once and confirm one persistent job uses both the delimited SKU data and labelled
+   image, then requires review.
+7. Complete review and generate catalog copy. Confirm only accepted text facts are sent for copy;
+   images are not resent and missing approved pricing remains unavailable.
+8. Confirm Job History records fixed endpoint/model fingerprints but no API key. Search logs and
+   SQLite for a unique safe test-key value and confirm it is absent. Historical provider rows, if
+   present from an older database, remain readable but cannot configure new jobs.
+9. Record all rows on the **NVIDIA Connection** checklist sheet. Detailed expected behavior and
+   troubleshooting are in `docs/LLM_PROVIDERS.md`.
 
 ## 16. Record defects and sign-off
 

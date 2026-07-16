@@ -33,7 +33,7 @@ class ReviewAction(StrEnum):
 
 class SourcePriority(IntEnum):
     STRUCTURED_INPUT = 2
-    MODEL_DATA = 3
+    INPUT_DATA = 3
     LABEL_TEXT = 4
     IMAGE = 5
     BUSINESS_RULE = 6
@@ -110,7 +110,7 @@ class ReviewItem(BaseModel):
             and not self.image_inferred_color
             and self.confidence in {Confidence.HIGH, Confidence.MEDIUM}
             and self.source_priority
-            in {SourcePriority.STRUCTURED_INPUT, SourcePriority.MODEL_DATA}
+            in {SourcePriority.STRUCTURED_INPUT, SourcePriority.INPUT_DATA}
             and self.matching_method != MatchMethod.FUZZY_SUGGESTION
         )
 
@@ -170,7 +170,7 @@ def _structured_input_candidates(
     candidates = []
     for header, raw in (
         structured_input_values(
-            row.model_code_input_data, registry, allowed_headers
+            row.input_data, registry, allowed_headers
         )
         or {}
     ).items():
@@ -187,11 +187,11 @@ def _structured_input_candidates(
     return tuple(candidates)
 
 
-def _model_data_candidates(
+def _input_data_candidates(
     row: InputRow, allowed_headers: set[str]
 ) -> tuple[_Candidate, ...]:
     candidates = []
-    for label, values in extract_labeled_values(row.model_code_input_data).items():
+    for label, values in extract_labeled_values(row.input_data).items():
         header = _LABEL_HEADERS.get(label)
         if header not in allowed_headers:
             continue
@@ -200,10 +200,10 @@ def _model_data_candidates(
                 _Candidate(
                     header=header,
                     raw_value=value,
-                    evidence_type="model_data",
+                    evidence_type="input_data",
                     evidence_references=(f"input:{row.sku}",),
                     confidence=Confidence.HIGH,
-                    priority=SourcePriority.MODEL_DATA,
+                    priority=SourcePriority.INPUT_DATA,
                 )
             )
     return tuple(candidates)
@@ -211,7 +211,7 @@ def _model_data_candidates(
 
 def _candidate_from_observation(observation: AttributeObservation) -> _Candidate:
     priorities = {
-        EvidenceType.INPUT: SourcePriority.MODEL_DATA,
+        EvidenceType.INPUT: SourcePriority.INPUT_DATA,
         EvidenceType.LABEL_TEXT: SourcePriority.LABEL_TEXT,
         EvidenceType.IMAGE: SourcePriority.IMAGE,
         EvidenceType.BUSINESS_RULE: SourcePriority.BUSINESS_RULE,
@@ -322,7 +322,7 @@ def _proposal(
             candidate.raw_value or candidate.canonical_value
             for candidate in ranked
             if candidate.priority
-            in {SourcePriority.STRUCTURED_INPUT, SourcePriority.MODEL_DATA}
+            in {SourcePriority.STRUCTURED_INPUT, SourcePriority.INPUT_DATA}
             and (candidate.raw_value or candidate.canonical_value)
         ),
         None,
@@ -532,7 +532,7 @@ def build_review_items(
             *structured,
             *(
                 candidate
-                for candidate in _model_data_candidates(row, allowed_headers)
+                for candidate in _input_data_candidates(row, allowed_headers)
                 if candidate.header not in structured_headers
             ),
         )

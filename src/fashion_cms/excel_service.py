@@ -25,8 +25,9 @@ REQUIRED_COLUMNS = (
     "base_code",
     "attributes__lulu_ean",
     "attributes__shipping_weight",
-    "model_code_input_data",
+    "input_data",
 )
+LEGACY_INPUT_COLUMN = "model_code_input_data"
 SYSTEM_COPY_FIELDS = {
     "sku": "sku",
     "base_code": "base_code",
@@ -43,7 +44,7 @@ BLANK_FIELD_MESSAGES = {
     "base_code": "Base code is blank; affected SKUs use their own internal group.",
     "attributes__lulu_ean": "EAN is blank.",
     "attributes__shipping_weight": "Shipping weight is blank.",
-    "model_code_input_data": "Model input data is blank.",
+    "input_data": "Input data is blank.",
 }
 
 
@@ -230,6 +231,15 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
                     Severity.CRITICAL,
                     "DUPLICATE_COLUMNS",
                     f"Duplicate columns: {', '.join(duplicate_headers)}.",
+                    worksheet.title,
+                )
+            )
+        if LEGACY_INPUT_COLUMN in present_headers:
+            issues.append(
+                _issue(
+                    Severity.CRITICAL,
+                    "LEGACY_COLUMN_NOT_ALLOWED",
+                    f"Legacy column {LEGACY_INPUT_COLUMN!r} is not accepted; use 'input_data'.",
                     worksheet.title,
                 )
             )

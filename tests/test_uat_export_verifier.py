@@ -24,7 +24,7 @@ def _input_workbook(path: Path) -> tuple:
             "base_code",
             "attributes__lulu_ean",
             "attributes__shipping_weight",
-            "model_code_input_data",
+            "input_data",
         )
     )
     sheet.append(("000123", "000BASE", "0000000123456", 0.25, "Structural test"))

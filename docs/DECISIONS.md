@@ -63,3 +63,26 @@ These defaults satisfy the untrusted-input and data-loss boundaries in the produ
   tests and, for vision, the deterministic blue-square diagnostic; no automatic fallback exists.
 - Native Anthropic, Gemini, Bedrock, Vertex, and other protocols remain outside this extension and
   require dedicated adapters.
+
+## 2026-07-16 — NVIDIA-only `input_data` extraction contract
+
+- The required workbook contract is `sku`, `base_code`, `attributes__lulu_ean`,
+  `attributes__shipping_weight`, and `input_data`. The old `model_code_input_data` header is
+  rejected rather than converted. `base_code` alone groups variants; the CMS output field
+  `attributes__model` is unchanged.
+- Live extraction and catalog copy now use only NVIDIA's fixed
+  `https://integrate.api.nvidia.com/v1/chat/completions` endpoint and
+  `thinkingmachines/inkling` model. The sole runtime secret is `NVIDIA_API_KEY`; model, endpoint,
+  image detail, sampling values, token limit, streaming behavior, and guided-JSON mode are code
+  constants. This supersedes the bring-your-own-provider runtime decision above.
+- The former provider/configuration tables and snapshots remain intact as non-secret audit
+  history, but no provider-management page, route selection, model discovery, browser key entry,
+  legacy OpenAI fallback, or automatic alternate route remains active.
+- A live call is authorized only after the current session/key fingerprint passes one exact
+  blue-square image plus guided-JSON diagnostic. Uploads never trigger extraction automatically;
+  the operator must still confirm charges and click **Run Data Extraction**.
+- The physical `job_rows.model_data` SQLite column is retained and now maps to `input_data`,
+  avoiding a destructive migration. Version-2 prompt/cache contracts prevent unfinished old jobs
+  from running under changed evidence semantics while keeping completed history readable.
+- Missing approved pricing remains visibly unavailable. No price, product fact, permitted value,
+  or release approval is inferred from the fixed runtime choice.

@@ -516,7 +516,7 @@ class JobDatabase:
                         row.base_code,
                         row.attributes__lulu_ean,
                         _json(row.attributes__shipping_weight),
-                        row.model_code_input_data,
+                        row.input_data,
                     ),
                 )
             for position, group in enumerate(groups):
@@ -711,7 +711,7 @@ class JobDatabase:
                 base_code=row["base_code"],
                 attributes__lulu_ean=row["ean"],
                 attributes__shipping_weight=json.loads(row["shipping_weight_json"]),
-                model_code_input_data=row["model_data"],
+                input_data=row["model_data"],
             )
             for row in rows
         )

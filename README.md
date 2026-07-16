@@ -4,8 +4,8 @@ A phased Streamlit application for turning fashion-product inputs and SKU-linked
 
 Release candidate `0.1.0-rc1` supports all seven CMS attribute sets through evidence-aware extraction, canonical
 normalization, persisted review, factual text-only catalog copy, exact per-set CMS workbooks, and
-separate QC workbooks. Live OpenAI calls remain optional and explicitly confirmed; fake extraction
-and copy clients keep the default workflow and tests offline.
+separate QC workbooks. Live extraction and catalog copy use one fixed NVIDIA Inkling runtime;
+fake clients keep automated tests offline.
 
 Phase 8 adds centralized release gates, deterministic evaluation tooling, configurable resource and
 cost limits, bounded model concurrency, persistent call accounting, cancellation/resume, partial
@@ -71,7 +71,7 @@ The active registry is authoritative. Add approved aliases to `Value_Aliases` fo
 only, then validate the workbook. A registry change revalidates stored enum decisions rather than
 silently changing them.
 
-Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`. Store SKU, base code, and EAN cells as text. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
+Upload an `.xlsx` file containing `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `input_data`. Store SKU, base code, and EAN cells as text. `base_code` groups variants; `input_data` supplies untrusted facts for that SKU. Name images `SKU-positiveOrdinal.ext`; for example, `ABC-12-2.jpg` belongs to SKU `ABC-12` at ordinal 2.
 
 The Image Downloader page accepts a separate `.xlsx` workbook with text SKU values in
 column A and image URLs in columns B onward. URL ordinals come from physical column position,
@@ -81,24 +81,17 @@ EXIF-oriented, fitted without default crop/stretch/upscale, and centered on a wh
 
 ## Configure extraction and copy
 
-Fake extraction is selected by default and does not require an API key or internet access. For
-an explicitly confirmed live request, set these server-side environment variables:
+Set the NVIDIA secret only in the server environment or secret manager:
 
 ```bash
-export OPENAI_API_KEY="your-secret-key"
-export OPENAI_MODEL="your-model-id"
-export OPENAI_IMAGE_DETAIL="high"
+export NVIDIA_API_KEY="your-rotated-secret-key"
 ```
 
-`OPENAI_IMAGE_DETAIL` defaults to `high`. The application starts without live credentials and
-disables live extraction with a configuration message. It never displays or stores the API key.
-Use `.env.example` as a name-only reference; do not put a real secret in Git.
-
-The **LLM Providers** page also supports separately tested and activated OpenAI-compatible
-Responses or Chat Completions routes for vision and catalog copy. It provides model discovery with
-manual-ID fallback plus session-only, environment-reference, and guarded encrypted-database secret
-modes. Start with [docs/LLM_PROVIDERS.md](docs/LLM_PROVIDERS.md); keep the app private because it
-does not yet have user authentication.
+The endpoint (`https://integrate.api.nvidia.com/v1/chat/completions`), model
+(`thinkingmachines/inkling`), and image detail (`high`) are fixed. Click **Test NVIDIA Connection**
+after upload; it validates authentication, vision, and exact guided JSON with a generated diagnostic
+image. **Run Data Extraction** stays disabled until that test passes for the current session/key.
+The application never displays or stores the key. See [the NVIDIA runtime guide](docs/LLM_PROVIDERS.md).
 
 ## Verify
 
@@ -113,7 +106,7 @@ The default suite uses only the fake client. When credentials are intentionally 
 the smallest opt-in live integration test separately:
 
 ```bash
-RUN_LIVE_LLM_TESTS=1 python -m pytest -m live
+RUN_LIVE_NVIDIA_TESTS=1 python -m pytest -m live
 ```
 
 Run the Phase 6 upload-to-export path directly with:

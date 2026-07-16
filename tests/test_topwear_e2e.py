@@ -48,7 +48,7 @@ def workbook_bytes() -> bytes:
             "base_code",
             "attributes__lulu_ean",
             "attributes__shipping_weight",
-            "model_code_input_data",
+            "input_data",
         ]
     )
     common = {

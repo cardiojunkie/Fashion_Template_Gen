@@ -50,7 +50,7 @@ def test_manual_checklist_has_required_sheets_columns_and_status_dropdowns() -> 
             "Image Downloader",
             "Job Recovery",
             "Security Checks",
-            "LLM Providers",
+            "NVIDIA Connection",
             "Defects",
             "User Sign-Off",
         ]
@@ -117,5 +117,5 @@ def test_structural_inputs_are_text_safe_and_negative_fixtures_are_actionable() 
         "base_code",
         "attributes__lulu_ean",
         "attributes__shipping_weight",
-        "model_code_input_data",
+        "input_data",
     )

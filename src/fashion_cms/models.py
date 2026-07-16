@@ -49,7 +49,7 @@ class ValidationIssue(BaseModel):
 
 
 class InputRow(BaseModel):
-    schema_version: ClassVar[str] = "1"
+    schema_version: ClassVar[str] = "2"
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     row_number: int = Field(ge=2)
@@ -57,7 +57,7 @@ class InputRow(BaseModel):
     base_code: str | None = Field(default=None, max_length=MAX_EXCEL_CELL_CHARACTERS)
     attributes__lulu_ean: str | None = Field(default=None, max_length=MAX_EXCEL_CELL_CHARACTERS)
     attributes__shipping_weight: str | int | float | None = None
-    model_code_input_data: str | None = Field(default=None, max_length=MAX_EXCEL_CELL_CHARACTERS)
+    input_data: str | None = Field(default=None, max_length=MAX_EXCEL_CELL_CHARACTERS)
 
     @field_validator("sku", mode="before")
     @classmethod
@@ -66,7 +66,7 @@ class InputRow(BaseModel):
             raise ValueError("must be stored as text")
         return value.strip()
 
-    @field_validator("base_code", "attributes__lulu_ean", "model_code_input_data", mode="before")
+    @field_validator("base_code", "attributes__lulu_ean", "input_data", mode="before")
     @classmethod
     def validate_optional_text(cls, value: object) -> object:
         if value is None:

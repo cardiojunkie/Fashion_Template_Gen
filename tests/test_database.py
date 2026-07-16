@@ -27,7 +27,7 @@ def row(
         row_number=row_number,
         sku=sku,
         base_code=base_code,
-        model_code_input_data=description,
+        input_data=description,
     )
 
 

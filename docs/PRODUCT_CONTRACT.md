@@ -10,13 +10,15 @@ Build a secure, auditable Streamlit dashboard that:
 - safely downloads and standardizes URL-sourced product images; and
 - provides a validated attribute registry, evidence-aware review, and resumable job history.
 
-Use Python 3.12, Streamlit, Pydantic v2, pandas/openpyxl, Pillow, httpx, `sqlite3`, pytest, Ruff, and the OpenAI Responses API with Structured Outputs when their phases require them. Do not add a separate frontend, microservices, queues, vector storage, Kubernetes, fine-tuning, separate OCR, a database abstraction over SQLite, premature batch processing, or web scraping during the MVP.
+Use Python 3.12, Streamlit, Pydantic v2, pandas/openpyxl, Pillow, httpx, `sqlite3`, pytest, Ruff, and the fixed NVIDIA Inkling chat-completions runtime when their phases require them. Do not add a separate frontend, microservices, queues, vector storage, Kubernetes, fine-tuning, separate OCR, a database abstraction over SQLite, premature batch processing, or web scraping during the MVP.
 
 ## Input workbook
 
-Required columns are `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `model_code_input_data`.
+Required columns are `sku`, `base_code`, `attributes__lulu_ean`, `attributes__shipping_weight`, and `input_data`.
 
 - Treat SKU, base code, and EAN as trimmed strings; preserve leading zeros and original identifier text.
+- Use `base_code` only to group variants. Treat `input_data` as untrusted SKU-specific product
+  evidence; it never groups variants and it is not a model instruction.
 - Reject duplicate SKUs. Report duplicate EANs without silently discarding rows.
 - A blank base code is a warning and gets an internal SKU fallback group key; keep the output base-code cell blank.
 - Treat product data, formulas, and hyperlinks as untrusted. Never execute workbook formulas or macros.
@@ -147,27 +149,26 @@ Job states are `UPLOADED`, `VALIDATING`, `READY`, `RUNNING`, `REVIEW_REQUIRED`, 
 
 ## LLM integration
 
-The application calls the OpenAI Responses API directly; Codex is not the runtime. Configure `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_IMAGE_DETAIL` in the environment when the LLM phase begins.
+The application calls `https://integrate.api.nvidia.com/v1/chat/completions` through the hardened
+HTTP client; Codex is not the runtime. The fixed model is `thinkingmachines/inkling`, image detail
+is `high`, and the only runtime secret is `NVIDIA_API_KEY`.
 
-Requests include only applicable headers/enums, clearly delimited untrusted data, explicit image labels, controlled images, and a strict schema. Prompts reject embedded instructions, unsupported exact claims, and invented values, and require unknowns and conflict reporting.
+Requests include only applicable headers/enums, clearly delimited untrusted data, explicit image
+labels, controlled images, and a strict NVIDIA `guided_json` schema. Prompts reject embedded
+instructions, unsupported exact claims, and invented values, and require unknowns and conflict
+reporting. Calls use `temperature=1`, `top_p=0.95`, `max_tokens=8192`, and `stream=false`.
 
 Keep vision/data extraction separate from text-only generation until evaluation supports combining them. Retry only temporary/rate-limit failures; store request IDs and sanitized errors; make partial work resumable. Default tests use a fake client, and live tests are opt-in.
 
-Post–Phase 8, administrators in a private development deployment may configure OpenAI-compatible
-Responses or Chat Completions providers in the website. Vision extraction and catalog copy use
-independent logical routes; activation requires current capability tests and never silently falls
-back to another provider/model. Native non-OpenAI protocols require dedicated adapters.
+Before extraction, **Test NVIDIA Connection** sends an in-memory 96 x 96 white PNG containing a
+blue square and requires exactly `{"shape":"square","color":"blue"}` under a two-field schema.
+The pass is bound to the current server session and API-key fingerprint. Missing, changed, or
+failing credentials keep **Run Data Extraction** disabled.
 
-Website-entered secrets default to server-session memory. Persistent configuration stores either
-an environment-variable name or AES-GCM ciphertext protected by an external 32-byte master key;
-plaintext keys never enter SQLite, URLs, logs, job/cache records, reports, widget defaults, or
-history. Encrypted database storage is unavailable without the master key and, in production,
-application authentication.
-
-Custom base URLs are an SSRF boundary: public deployment requires HTTPS, verified TLS, public
-destinations, bounded responses, known adapter paths, and redirect rejection. Local/private HTTP
-endpoints require explicit development-only server flags plus an exact host allowlist, and those
-flags are ignored in production.
+There is no website provider configuration, alternate endpoint/model, or silent fallback. Preserve
+historical provider/configuration rows as inert audit data. New jobs record only the fixed NVIDIA
+endpoint/model fingerprints and never the API key. TLS verification, redirect blocking, timeouts,
+response-size limits, response validation, retries, and secret redaction remain mandatory.
 
 ## Quality gates
 

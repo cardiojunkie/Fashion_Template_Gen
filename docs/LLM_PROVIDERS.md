@@ -1,111 +1,82 @@
-# LLM provider configuration
+# NVIDIA Inkling runtime
 
-The **LLM Providers** page configures OpenAI-compatible endpoints without changing the catalog
-pipeline. Custom provider configuration currently supports OpenAI-compatible endpoints. Providers
-using a different API protocol require a dedicated adapter.
+The application has one live extraction and catalog-copy runtime. Operators cannot configure a
+provider, endpoint, or model in the website.
 
-## Supported protocols and routes
+## Fixed configuration
 
-- `OPENAI_RESPONSES` calls `{base URL}/responses`.
-- `OPENAI_CHAT_COMPLETIONS` calls `{base URL}/chat/completions`.
-- Both protocols discover models from `{base URL}/models` when the provider supports listing.
-- `VISION_EXTRACTION` and `CATALOG_COPY` are independent active routes and may use the same or
-  different providers/models. No automatic fallback or paid retry on another provider occurs.
+- Endpoint: `https://integrate.api.nvidia.com/v1/chat/completions`
+- Model: `thinkingmachines/inkling`
+- Server secret: `NVIDIA_API_KEY`
+- Request settings: image detail `high`, `temperature=1`, `top_p=0.95`, `max_tokens=8192`, and
+  `stream=false`
+- Structured responses: NVIDIA `guided_json` with the request's exact JSON schema
 
-“OpenAI-compatible” means the endpoint accepts one of those request/response shapes. It does not
-guarantee model listing, strict JSON schemas, image input, usage reporting, or identical error
-codes. Anthropic Messages, Gemini, Bedrock, Vertex AI, and other native protocols need dedicated
-adapters and are not implemented.
+Put `NVIDIA_API_KEY` in the server environment or deployment secret manager. Never put a real key
+in Git, `.env.example`, a workbook, browser field, screenshot, report, URL, or chat. Revoke and
+rotate any key that has been exposed.
 
-## Add, test, and activate a provider
+NVIDIA recommends `guided_json` rather than unconstrained JSON-object mode for schema-shaped
+responses; see the [NVIDIA structured-generation guide](https://docs.nvidia.com/nim/large-language-models/1.14.0/structured-generation.html).
 
-1. Keep the application private and open **LLM Providers**.
-2. Enter a unique provider name, protocol, exact API base URL, authentication mode, secret-storage
-   mode, and timeout. The application adds only the known endpoint path; it never adds `/v1`.
-3. For `API_KEY_HEADER`, enter the provider's documented header name. Reserved or malformed
-   headers are rejected. For `NO_AUTH`, no key is used.
-4. Enter vision and catalog model IDs manually, or save the provider and select **Fetch Models /
-   Refresh**. A discovered model is never selected or activated automatically. If the page says
-   **Model listing unsupported**, use the manual fields.
-5. Select a route and run **Test Connection**. It sends only `Return exactly: BYO_LLM_OK` with a
-   low output limit. Then run **Test Structured Output**. For vision, also run **Test Vision**;
-   this sends only an in-memory blue-square diagnostic image.
-6. Review the sanitized result, selected provider/base URL/protocol/model, capability state, last
-   test time, secret mode, and pricing status. Tests may incur provider charges; configured model
-   pricing is not assumed.
-7. Select the purpose or purposes to activate, confirm any active-route replacement, and choose
-   **Save and Activate**. Catalog activation requires text plus structured output because the
-   current catalog service uses a structured response. Vision additionally requires the vision
-   diagnostic. Saving an unverified provider is allowed; activating one is not.
+## Connection gate
 
-The diagnostics prove basic protocol compatibility only, not fashion-attribute accuracy. Paid
-fashion evaluation and user-approved ground truth remain separate release gates.
+On **CMS Generator**, click **Test NVIDIA Connection** before extraction. The test sends no uploaded
+or customer data. It creates an in-memory 96 x 96 white PNG containing a blue square and requires
+exactly this two-field response:
 
-## Secret-storage modes
-
-- `SESSION_ONLY` is the default. The API key stays as a masked server-session value, is never
-  written to SQLite, and disappears on session/server restart. Re-enter it before resuming live
-  work.
-- `ENV_REFERENCE` stores only a validated environment-variable name. Put the secret value in
-  Codespaces Secrets, the process environment, or the deployment secret manager. The resolved
-  value is never displayed.
-- `ENCRYPTED_DATABASE` is offered only in private development when
-  `FASHION_CMS_LLM_MASTER_KEY` contains a URL-safe base64-encoded 32-byte key. AES-GCM ciphertext
-  is stored; the master key stays outside SQLite. It remains disabled in production until real
-  application authentication exists. A blank edit keeps the ciphertext; **Clear API key** requires
-  separate confirmation.
-
-Provider lists show only **API key configured** or **API key not configured**. They never show a
-prefix, suffix, resolved environment value, ciphertext, authorization header, or raw response.
-
-### Rotate keys
-
-Back up SQLite first. Provider API-key rotation is the shortest safe path: create the replacement
-key at the provider, enter it in the password field, rerun all capability tests, reactivate the
-routes, then revoke the old key. For master-key rotation, inventory the encrypted providers, stop
-the application, replace the master key, restart privately, and re-enter each provider API key so
-its ciphertext is overwritten under the new master before resuming live work. Verify the backup
-and do not delete it until every route passes. The application never sends decrypted keys to the
-browser and has no insecure fallback when decryption fails.
-
-## Endpoint security and local development
-
-Public endpoints require HTTPS, verified TLS, no URL credentials/query/fragment, and DNS resolving
-only to public addresses. Requests are IP-pinned and peer-checked; redirects, private/local,
-link-local, reserved, multicast, metadata-service, non-HTTP, malformed, and oversized responses
-are blocked. Certificate verification cannot be disabled in the website.
-
-Local Ollama, LM Studio, or vLLM endpoints require all of the following server-side settings:
-
-```bash
-ALLOW_PRIVATE_LLM_ENDPOINTS=true
-ALLOW_INSECURE_LLM_HTTP=true        # only when the endpoint itself is HTTP
-FASHION_CMS_LLM_ENDPOINT_ALLOWLIST=localhost
+```json
+{"shape": "square", "color": "blue"}
 ```
 
-These flags are ignored in `FASHION_CMS_ENVIRONMENT=production`; only exact allowlisted hosts are
-accepted. In Codespaces, localhost means the Codespace container—not the user’s Windows computer.
-A model on the user's laptop is not automatically reachable from Codespaces.
+A pass proves authentication, fixed-model access, image input, and guided JSON handling in one
+request. It is bound to the current server session and API-key fingerprint. A missing or changed key,
+server restart, authentication error, transport error, malformed response, extra field, or value
+mismatch clears or fails the gate. **Run Data Extraction** remains disabled until the current gate
+passes. The diagnostic can incur a provider charge; approved pricing is otherwise reported as
+unavailable.
 
-## Retirement, history, and recovery
+## Extraction workflow
 
-Disabling a provider deactivates its routes. Deletion is allowed only when no historical job
-snapshot references it; otherwise the provider is retired. Jobs retain a non-secret provider,
-protocol, base-URL fingerprint, model, route, configuration, adapter, prompt, and schema snapshot.
-Provider/model/route changes stale tests and invalidate relevant caches. Correct the configuration,
-retest, and explicitly reactivate; the application never silently switches providers.
+1. Upload an `.xlsx` containing exactly the required columns `sku`, `base_code`,
+   `attributes__lulu_ean`, `attributes__shipping_weight`, and `input_data`.
+2. Upload the SKU-labelled product images. `base_code` groups variants; `input_data` supplies
+   untrusted evidence only for its SKU.
+3. Confirm the product profile and one analysis mode for each base-code group.
+4. Pass **Test NVIDIA Connection**, confirm any displayed request/cost warning, then click
+   **Run Data Extraction**.
+5. Review every proposal, generate factual catalog copy from accepted facts, and export the exact
+   CMS workbook plus its separate QC workbook.
+
+Extraction never starts automatically after upload. There is no alternate provider/model, website
+secret entry, model discovery, local-endpoint mode, or automatic fallback.
+
+## Security, history, and recovery
+
+The fixed route retains TLS verification, DNS/IP and peer validation, redirect rejection, bounded
+timeouts and response sizes, retry classification, response/schema validation, and secret/error
+redaction. The key never enters SQLite, job/cache records, logs, reports, or downloads. New jobs
+record fixed NVIDIA endpoint/model fingerprints, not the key.
+
+Schema-v6 provider, route, capability, and snapshot rows from earlier builds are preserved as inert
+audit history. They are not selectable and do not affect new jobs. A retry after a process restart
+requires the same validated workbook/images to be uploaded again and a fresh connection pass.
 
 ## Troubleshooting
 
-| Result | Meaning / action |
+| Result | Action |
 |---|---|
-| 401 / authentication failure | Re-enter the key or verify the environment reference. Never paste it into chat, logs, screenshots, or Git. |
-| 403 / authorization failure | Grant the key access to the selected model/endpoint. |
-| 404 / unknown model | Verify the exact model ID and base URL; do not add `/v1` unless the provider documents it. |
-| 429 / rate limit | Wait for the provider limit to recover, then retry explicitly. |
-| Timeout / DNS | Verify reachability and the bounded timeout; Codespaces cannot automatically reach a laptop service. |
-| TLS failure | Fix the provider certificate/hostname. TLS verification cannot be disabled. |
-| Model listing unsupported | Enter the model ID manually and run capability tests. |
-| Malformed/incompatible response | Confirm the selected protocol and provider compatibility; a native adapter may be required. |
-| Text passes, structured fails | The model cannot serve the current catalog or vision route. |
-| Vision unsupported/failed | Use the model only for catalog copy, or select and test a vision-capable model. |
+| Missing key | Set `NVIDIA_API_KEY` server-side and restart the private app. |
+| 401 / authentication failure | Rotate or correct the key; never paste it into chat, logs, screenshots, or Git. |
+| 403 / model access failure | Grant the key access to `thinkingmachines/inkling`. |
+| 404 / fixed route unavailable | Verify NVIDIA service availability; the endpoint/model cannot be changed in the UI. |
+| 429 / rate limit | Wait for the NVIDIA limit to recover, then retry explicitly. |
+| Timeout / DNS / TLS | Restore outbound HTTPS access to `integrate.api.nvidia.com`; TLS verification cannot be disabled. |
+| Malformed or mismatched diagnostic | Leave extraction blocked and inspect sanitized server diagnostics; do not bypass the gate. |
+
+The default test suite is offline. Run the opt-in live integration check only with an approved,
+rotated key:
+
+```bash
+RUN_LIVE_NVIDIA_TESTS=1 python -m pytest -m live
+```

@@ -249,6 +249,23 @@ class CapabilityRecord(BaseModel):
     summary: dict[str, object] | None = None
 
 
+def capability_supports_route(
+    capability: CapabilityRecord, purpose: RoutePurpose
+) -> bool:
+    structured = capability.structured_status in {
+        StructuredCapability.VERIFIED_NATIVE_STRUCTURED_OUTPUT,
+        StructuredCapability.VERIFIED_JSON_OUTPUT,
+    }
+    return bool(
+        capability.text_passed
+        and structured
+        and (
+            purpose != RoutePurpose.VISION_EXTRACTION
+            or capability.vision_status == VisionCapability.VISION_VERIFIED
+        )
+    )
+
+
 class ProviderTestResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -963,14 +980,7 @@ class ProviderStore:
         if not provider.enabled or provider.retired or not route.enabled or not secret_available:
             raise ValueError("Provider route is disabled or its API key is unavailable.")
         capability = self.capability(provider.id, route.model_id)
-        structured = capability.structured_status in {
-            StructuredCapability.VERIFIED_NATIVE_STRUCTURED_OUTPUT,
-            StructuredCapability.VERIFIED_JSON_OUTPUT,
-        }
-        compatible = bool(capability.text_passed and structured)
-        if route.purpose == RoutePurpose.VISION_EXTRACTION:
-            compatible = compatible and capability.vision_status == VisionCapability.VISION_VERIFIED
-        if not compatible:
+        if not capability_supports_route(capability, route.purpose):
             raise ValueError("Required provider capability tests have not passed.")
         current = self.active_route(route.purpose)
         if current is not None and current.id != route.id and not confirm_replace:

@@ -44,7 +44,7 @@ def row(
         base_code=base_code,
         attributes__lulu_ean=f"EAN-{sku}",
         attributes__shipping_weight="1.0",
-        model_code_input_data=description,
+        input_data=description,
     )
 
 
@@ -205,7 +205,7 @@ def test_invalid_model_result_is_not_cached_as_success(registry: Registry) -> No
     [
         ("analysis mode", {"analysis_mode": AnalysisMode.BASE_CODE_SIZE_ONLY}),
         ("ordered identifiers", {"ordered_identifiers": ("base:BASE", "SKU-2")}),
-        ("product data", {"model_code_input_data": (("SKU-1", "color: Blue"),)}),
+        ("input data", {"input_data": (("SKU-1", "color: Blue"),)}),
         (
             "EAN",
             {"row_specific_data": (("SKU-1", "BASE", "EAN-CHANGED", "1.0"),)},
@@ -242,7 +242,7 @@ def test_every_cache_input_change_invalidates_the_key(
     inputs: dict[str, object] = {
         "analysis_mode": AnalysisMode.PER_SKU,
         "ordered_identifiers": ("base:BASE", "SKU-1"),
-        "model_code_input_data": (("SKU-1", "color: Red"),),
+        "input_data": (("SKU-1", "color: Red"),),
         "row_specific_data": (("SKU-1", "BASE", "EAN-SKU-1", "1.0"),),
         "image_assets": (asset,),
         "context": context,
@@ -262,7 +262,7 @@ def test_every_cache_input_change_invalidates_the_key(
 
 @pytest.mark.parametrize(
     "component",
-    ["product_data", "ean", "shipping_weight", "representative", "image_detail"],
+    ["input_data", "ean", "shipping_weight", "representative", "image_detail"],
 )
 def test_phase5_cache_misses_for_changed_runtime_input(
     registry: Registry,
@@ -283,8 +283,8 @@ def test_phase5_cache_misses_for_changed_runtime_input(
 
     changed_rows = rows
     changed_options = dict(baseline_options)
-    if component == "product_data":
-        changed_rows = (rows[0].model_copy(update={"model_code_input_data": "color: Blue"}), rows[1])
+    if component == "input_data":
+        changed_rows = (rows[0].model_copy(update={"input_data": "color: Blue"}), rows[1])
     elif component == "ean":
         changed_rows = (
             rows[0].model_copy(update={"attributes__lulu_ean": "EAN-CHANGED"}),
@@ -474,8 +474,8 @@ def test_api_key_is_absent_from_requests_errors_and_sqlite(
     monkeypatch: pytest.MonkeyPatch,
     registry: Registry,
 ) -> None:
-    secret = "sk-phase5-do-not-store-this-value"
-    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    secret = "nvapi-phase5-do-not-store-this-value"
+    monkeypatch.setenv("NVIDIA_API_KEY", secret)
     path = tmp_path / "secret-check.sqlite3"
     database = JobDatabase(path)
     rows = (row("SKU-1"),)

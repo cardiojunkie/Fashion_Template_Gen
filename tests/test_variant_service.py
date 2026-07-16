@@ -22,7 +22,7 @@ def row(
         row_number=row_number,
         sku=sku,
         base_code=base_code,
-        model_code_input_data=description,
+        input_data=description,
     )
 
 
@@ -199,8 +199,8 @@ def test_representative_ties_use_workbook_order() -> None:
         ("analysis mode", {"analysis_mode": AnalysisMode.BASE_CODE_SIZE_ONLY}),
         ("ordered identifiers", {"ordered_identifiers": ("base:BASE", "SKU-2", "SKU-1")}),
         (
-            "normalized model data",
-            {"model_code_input_data": (("SKU-1", "Blue shirt"),)},
+            "normalized input data",
+            {"input_data": (("SKU-1", "Blue shirt"),)},
         ),
         ("image hash", {"image_assets": (image("SKU-1", 1, "b"),)}),
         ("attribute set", {"context": context(attribute_set="bottomwear")}),
@@ -218,7 +218,7 @@ def test_every_cache_contract_component_invalidates_the_key(
     inputs: dict[str, object] = {
         "analysis_mode": AnalysisMode.PER_SKU,
         "ordered_identifiers": ("base:BASE", "SKU-1"),
-        "model_code_input_data": (("SKU-1", "Red shirt"),),
+        "input_data": (("SKU-1", "Red shirt"),),
         "image_assets": (image("SKU-1", 1),),
         "context": context(),
     }
@@ -237,7 +237,7 @@ def test_cache_key_normalizes_equivalent_model_text() -> None:
     }
 
     assert build_cache_key(
-        **inputs, model_code_input_data=(("SKU-1", "  Red\u00a0shirt  "),)
+        **inputs, input_data=(("SKU-1", "  Red\u00a0shirt  "),)
     ) == build_cache_key(
-        **inputs, model_code_input_data=(("SKU-1", "Red shirt"),)
+        **inputs, input_data=(("SKU-1", "Red shirt"),)
     )

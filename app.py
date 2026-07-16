@@ -1,9 +1,9 @@
+from dataclasses import dataclass
 from hashlib import sha256
 import os
 from pathlib import Path
 
 import streamlit as st
-from pydantic import SecretStr
 
 from fashion_cms.database import InvalidJobEdit, InvalidStateTransition, JobDatabase
 from fashion_cms.evaluation import load_thresholds
@@ -36,35 +36,30 @@ from fashion_cms.image_downloader import (
 )
 from fashion_cms.image_service import open_oriented_image, parse_uploaded_images
 from fashion_cms.jobs import JobService, summarize_job_usage
-from fashion_cms.llm_service import LLMError, LLMSettings, OpenAIResponsesClient
+from fashion_cms.llm_service import (
+    LLMError,
+    NVIDIA_ADAPTER_VERSION,
+    NVIDIA_CACHE_KEY,
+    NVIDIA_CHAT_COMPLETIONS_URL,
+    NVIDIA_IMAGE_DETAIL,
+    NVIDIA_MODEL,
+    NvidiaInklingClient,
+    NvidiaSettings,
+    test_nvidia_connection,
+)
 from fashion_cms.provider_service import (
-    AuthenticationMode,
-    EndpointPolicy,
-    FailureCategory,
-    ModelRoute,
-    ProviderDraft,
     ProviderProtocol,
-    ProviderRequestError,
     ProviderStore,
     RoutePurpose,
-    SecretStorageMode,
-    create_adapter,
-    discover_models,
-    encrypted_mode_available,
-    endpoint_url,
-    provider_public_row,
-    provider_secret_available,
-    resolve_provider_secret,
-    test_structured_output,
-    test_text_connection,
-    test_vision,
 )
 from fashion_cms.models import (
     AnalysisMode,
+    ImageResult,
     JobStatus,
     Severity,
     UploadedImage,
     ValidationIssue,
+    WorkbookResult,
     WorkItemStatus,
 )
 from fashion_cms.registry import configuration_issues, load_registry, profile_ids
@@ -86,8 +81,14 @@ from fashion_cms.topwear_extraction import (
     ExtractionRecord,
     applicable_attribute_headers,
     cached_attribute_item_keys,
-    fake_attribute_client,
     run_attribute_job,
+)
+from fashion_cms.variant_service import (
+    CacheContext,
+    RequestPlan,
+    VariantGroup,
+    build_request_plan,
+    build_variant_groups,
 )
 
 
@@ -96,11 +97,21 @@ IMAGE_BATCH_STATE = "image_download_batch"
 IMAGE_WORKBOOK_DIGEST_STATE = "image_download_workbook_digest"
 CMS_JOB_STATE = "cms_job_id"
 CMS_SOURCE_DIGEST_STATE = "cms_source_digest"
+CMS_INPUT_DIGEST_STATE = "cms_input_digest"
+CMS_RUN_STATE = "cms_run_job_id"
+CMS_REVIEW_STATE = "cms_review_job_id"
+CMS_PROGRESS_STATE = "cms_progress"
+NVIDIA_CONNECTION_STATE = "nvidia_connection"
 DEFAULT_DATABASE_PATH = ROOT / "data" / "fashion_cms.sqlite3"
 PRICING_PATH = ROOT / "config" / "model_pricing.json"
 THRESHOLDS_PATH = ROOT / "config" / "evaluation_thresholds.json"
 RELEASE_REPORT_PATH = ROOT / "docs" / "releases" / "0.1.0-rc1" / "release-gates.json"
-PROVIDER_SECRETS_STATE = "llm_provider_session_secrets"
+LEGACY_EXTRACTION_CONTRACTS = frozenset(
+    {
+        ("topwear-extraction-v1", "topwear-structured-output-v1"),
+        ("attribute-extraction-v1", "attribute-structured-output-v1"),
+    }
+)
 registry = load_registry(ROOT / "config" / "attribute_registry.xlsx")
 set_names = {
     row.attribute_set_id: row.attribute_set_name for row in registry.attribute_sets
@@ -126,6 +137,13 @@ def _is_extraction_job(job) -> bool:
     ) == _contract_versions(job.attribute_set)
 
 
+def _is_legacy_extraction_job(job) -> bool:
+    return (
+        job.context.prompt_version,
+        job.context.schema_version,
+    ) in LEGACY_EXTRACTION_CONTRACTS
+
+
 @st.cache_resource
 def get_database(path: str) -> JobDatabase:
     return JobDatabase(path)
@@ -138,10 +156,6 @@ def job_database() -> JobDatabase:
 
 def provider_store() -> ProviderStore:
     return ProviderStore(job_database())
-
-
-def provider_session_secrets() -> dict[str, object]:
-    return st.session_state.setdefault(PROVIDER_SECRETS_STATE, {})
 
 
 def _source_digest(
@@ -185,9 +199,360 @@ def show_issues(issues: tuple[ValidationIssue, ...]) -> None:
         )
 
 
+@dataclass(frozen=True)
+class ExtractionChecklist:
+    passed: tuple[str, ...]
+    action_required: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        return not self.action_required
+
+
+def _nvidia_connection_passed(settings: NvidiaSettings) -> bool:
+    state = st.session_state.get(NVIDIA_CONNECTION_STATE)
+    return bool(
+        settings.connection_fingerprint
+        and isinstance(state, dict)
+        and state.get("fingerprint") == settings.connection_fingerprint
+    )
+
+
+def _show_nvidia_connection(settings: NvidiaSettings) -> bool:
+    st.subheader("NVIDIA Inkling connection")
+    st.caption(
+        f"Fixed model: {NVIDIA_MODEL}. The test sends one small image and may incur a charge."
+    )
+    if not settings.enabled:
+        st.info(settings.disabled_reason)
+        st.session_state.pop(NVIDIA_CONNECTION_STATE, None)
+    if st.button(
+        "Test NVIDIA Connection",
+        disabled=not settings.enabled,
+        key="test_nvidia_connection",
+    ):
+        client = NvidiaInklingClient(settings)
+        try:
+            with st.spinner("Testing NVIDIA vision and structured output…"):
+                response = test_nvidia_connection(client)
+        except Exception as exc:
+            st.session_state.pop(NVIDIA_CONNECTION_STATE, None)
+            st.error(f"NVIDIA connection test failed: {exc}")
+        else:
+            st.session_state[NVIDIA_CONNECTION_STATE] = {
+                "fingerprint": settings.connection_fingerprint,
+                "request_id": response.request_id,
+                "usage": response.usage,
+            }
+        finally:
+            client.close()
+    passed = _nvidia_connection_passed(settings)
+    if passed:
+        state = st.session_state[NVIDIA_CONNECTION_STATE]
+        st.success("NVIDIA connection, vision, and structured output passed for this session.")
+        st.caption(
+            f"Request ID: {state.get('request_id') or 'unavailable'} · "
+            f"usage: {state.get('usage') or 'unavailable'}"
+        )
+    return passed
+
+
+def _vision_context(
+    attribute_set: str,
+    product_profile: str | None,
+) -> CacheContext:
+    prompt_version, schema_version = _contract_versions(attribute_set)
+    return CacheContext(
+        attribute_set=attribute_set,
+        product_profile=product_profile,
+        registry_version=registry.fingerprint,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        model_identifier=NVIDIA_MODEL,
+        image_detail=NVIDIA_IMAGE_DETAIL,
+        provider_cache_key=NVIDIA_CACHE_KEY,
+    )
+
+
+def _configure_analysis_modes(
+    rows,
+    images: tuple[UploadedImage, ...],
+    product_profile: str | None,
+    *,
+    key_prefix: str,
+    stored_groups: tuple[VariantGroup, ...] = (),
+    editable: bool = True,
+) -> tuple[tuple[VariantGroup, ...], tuple[str, ...]]:
+    defaults = stored_groups or build_variant_groups(
+        rows, images, product_profile=product_profile
+    )
+    modes: dict[str, AnalysisMode] = {}
+    representatives: dict[str, str] = {}
+    errors = []
+    for group in defaults:
+        label = group.base_code or f"blank base code · {group.skus[0]}"
+        with st.expander(label, expanded=len(defaults) == 1):
+            mode = st.selectbox(
+                f"Analysis mode for {label}",
+                tuple(AnalysisMode),
+                index=tuple(AnalysisMode).index(group.analysis_mode),
+                format_func=lambda value: value.value,
+                key=f"cms_mode_{key_prefix}_{sha256(group.key.encode()).hexdigest()[:12]}",
+                disabled=not editable,
+            )
+            representative = st.selectbox(
+                f"Representative SKU for {label}",
+                group.skus,
+                index=group.skus.index(group.representative_sku),
+                key=f"cms_representative_{key_prefix}_{sha256(group.key.encode()).hexdigest()[:12]}",
+                disabled=not editable or mode != AnalysisMode.BASE_CODE_SIZE_ONLY,
+            )
+            if mode == AnalysisMode.BASE_CODE_SIZE_ONLY:
+                st.warning(
+                    "Use size-only only when these SKUs differ by size and show the same "
+                    "visible product."
+                )
+                for warning in group.size_only_warnings:
+                    st.warning(warning)
+                confirmed = not editable or st.checkbox(
+                    f"Confirm BASE_CODE_SIZE_ONLY for {label}",
+                    key=f"cms_confirm_mode_{key_prefix}_{sha256(group.key.encode()).hexdigest()[:12]}",
+                )
+                if not confirmed:
+                    errors.append(f"Confirm analysis mode for base code {label}")
+            modes[group.key] = mode
+            representatives[group.key] = representative
+    return (
+        build_variant_groups(
+            rows,
+            images,
+            modes=modes,
+            representatives=representatives,
+            product_profile=product_profile,
+        ),
+        tuple(errors),
+    )
+
+
+def _extraction_checklist(
+    workbook_result: WorkbookResult | None,
+    image_result: ImageResult | None,
+    attribute_set: str | None,
+    product_profile: str | None,
+    profile_confirmed: bool,
+    plan: RequestPlan | None,
+    settings: NvidiaSettings,
+    connection_passed: bool,
+    limits: ResourceLimits,
+    *,
+    planned_attempts: int,
+    attempted_calls: int = 0,
+    estimated_cost=None,
+    mode_errors: tuple[str, ...] = (),
+    registry_errors: tuple[str, ...] = (),
+) -> ExtractionChecklist:
+    passed = []
+    required = []
+    if workbook_result is None:
+        required.append("Upload input workbook")
+    else:
+        critical = tuple(
+            issue for issue in workbook_result.issues if issue.severity == Severity.CRITICAL
+        )
+        if workbook_result.ready:
+            passed.extend(
+                (
+                    "Workbook validated",
+                    "All required columns present",
+                    f"{len(workbook_result.rows):,} SKUs found",
+                )
+            )
+        else:
+            required.extend(f"Workbook: {issue.message}" for issue in critical)
+            if not workbook_result.rows and not critical:
+                required.append("Add at least one valid SKU")
+
+    if image_result is None:
+        required.append("Upload images or an image ZIP")
+    else:
+        critical = tuple(
+            issue for issue in image_result.issues if issue.severity == Severity.CRITICAL
+        )
+        required.extend(f"Images: {issue.message}" for issue in critical)
+        if image_result.images:
+            passed.append(f"{len(image_result.images):,} images matched")
+        elif not critical:
+            required.append("Upload at least one valid SKU image")
+
+    if attribute_set:
+        passed.append(f"Attribute set: {set_names[attribute_set]}")
+    else:
+        required.append("Select an attribute set")
+    if product_profile and profile_confirmed:
+        passed.append(f"Product profile: {product_profile}")
+    elif not product_profile:
+        required.append("Select a product profile")
+    else:
+        required.append("Confirm the selected product profile")
+    required.extend(f"Attribute configuration: {error}" for error in registry_errors)
+
+    if plan is not None and plan.groups:
+        passed.append(f"Analysis modes valid for {len(plan.groups):,} base-code groups")
+        passed.append(f"{len(plan.items):,} vision requests planned")
+        labels = {group.key: group.base_code or group.skus[0] for group in plan.groups}
+        for item in plan.items:
+            if item.image_assets:
+                continue
+            if item.analysis_mode == AnalysisMode.PER_SKU:
+                required.append(f"SKU {item.representative_sku} has no image")
+            else:
+                required.append(
+                    f"Representative SKU {item.representative_sku} for base code "
+                    f"{labels[item.group_key]} has no image"
+                )
+    elif workbook_result is not None and workbook_result.ready:
+        required.append("Configure a valid analysis mode for every base-code group")
+    required.extend(mode_errors)
+
+    if not settings.enabled:
+        required.append("Configure NVIDIA_API_KEY in the server environment")
+    else:
+        passed.append(f"Vision model configured: NVIDIA · {NVIDIA_MODEL}")
+        passed.append("NVIDIA authentication key is available")
+        if connection_passed:
+            passed.append("NVIDIA connection, vision, and structured output passed")
+        else:
+            required.append("Pass Test NVIDIA Connection for this session")
+
+    if plan is not None:
+        if attempted_calls + planned_attempts <= limits.calls_per_job:
+            passed.append(
+                f"Request limit available: {planned_attempts:,} planned attempts, "
+                f"{limits.calls_per_job - attempted_calls:,} remaining"
+            )
+        else:
+            required.append(
+                f"Reduce planned attempts below the remaining request limit of "
+                f"{max(0, limits.calls_per_job - attempted_calls):,}"
+            )
+        if estimated_cost is not None and planned_attempts:
+            if limits.maximum_estimated_cost is None:
+                required.append("Configure an approved maximum estimated extraction cost")
+            elif estimated_cost > limits.maximum_estimated_cost:
+                required.append(
+                    f"Estimated extraction cost exceeds the configured limit of "
+                    f"{limits.maximum_estimated_cost}"
+                )
+            else:
+                passed.append("Estimated extraction cost is within the configured limit")
+    return ExtractionChecklist(tuple(passed), tuple(dict.fromkeys(required)))
+
+
+def _show_extraction_checklist(checklist: ExtractionChecklist) -> None:
+    st.markdown("**Ready:**")
+    if checklist.passed:
+        st.success("\n\n".join(f"✓ {item}" for item in checklist.passed))
+    else:
+        st.info("No readiness checks have passed yet.")
+    if checklist.action_required:
+        st.markdown("**Action required:**")
+        st.error("\n\n".join(f"✗ {item}" for item in checklist.action_required))
+
+
+def _create_extraction_job(
+    workbook_result: WorkbookResult,
+    image_result: ImageResult,
+    attribute_set: str,
+    product_profile: str,
+    groups: tuple[VariantGroup, ...],
+) -> str:
+    prompt_version, schema_version = _contract_versions(attribute_set)
+    job_id = JobService(job_database()).create_job(
+        workbook_result.rows,
+        image_result.images,
+        attribute_set=attribute_set,
+        product_profile=product_profile,
+        registry_version=registry.fingerprint,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        model_identifier=NVIDIA_MODEL,
+        image_detail=NVIDIA_IMAGE_DETAIL,
+        provider_cache_key=NVIDIA_CACHE_KEY,
+        modes={group.key: group.analysis_mode for group in groups},
+        representatives={group.key: group.representative_sku for group in groups},
+    )
+    provider_store().record_job_snapshot(
+        job_id,
+        RoutePurpose.VISION_EXTRACTION,
+        provider=None,
+        display_name="NVIDIA NIM · Inkling",
+        protocol=ProviderProtocol.OPENAI_CHAT_COMPLETIONS.value,
+        base_url_fingerprint=sha256(NVIDIA_CHAT_COMPLETIONS_URL.encode()).hexdigest()[:16],
+        model_id=NVIDIA_MODEL,
+        provider_configuration_version=0,
+        adapter_version=NVIDIA_ADAPTER_VERSION,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+    )
+    return job_id
+
+
+def _run_extraction_job(
+    job_id: str,
+    images: tuple[UploadedImage, ...],
+    settings: NvidiaSettings,
+) -> None:
+    database = job_database()
+    job = database.get_job(job_id)
+    if (
+        not settings.enabled
+        or not _nvidia_connection_passed(settings)
+        or NVIDIA_CACHE_KEY != job.context.provider_cache_key
+        or NVIDIA_MODEL != job.context.model_identifier
+        or NVIDIA_IMAGE_DETAIL != job.context.image_detail
+    ):
+        raise ValueError("The tested NVIDIA runtime no longer matches this job.")
+    items = database.list_work_items(job_id)
+    retry_failed = any(item.status == WorkItemStatus.FAILED for item in items)
+    if job.cancel_requested:
+        database.clear_cancellation(job_id)
+    progress_bar = st.progress(0.0)
+    progress_text = st.empty()
+
+    def update(done: int, total: int, item) -> None:
+        st.session_state[CMS_PROGRESS_STATE] = {
+            "job_id": job_id,
+            "done": done,
+            "total": total,
+            "skus": item.represented_skus,
+        }
+        progress_bar.progress(done / total if total else 1.0)
+        progress_text.caption(
+            f"Processed {done} of {total}: {', '.join(item.represented_skus)}"
+        )
+
+    client = NvidiaInklingClient(settings)
+    prompt_version, schema_version = _contract_versions(job.attribute_set)
+    try:
+        with st.spinner("Extracting product observations…"):
+            run_attribute_job(
+                database,
+                job_id,
+                client,
+                images,
+                registry,
+                retry_failed=retry_failed,
+                progress=update,
+                expected_prompt_version=prompt_version,
+                expected_schema_version=schema_version,
+            )
+    finally:
+        client.close()
+
+
 def cms_workbook_page() -> None:
     st.title("Fashion CMS Upload Generator")
-    st.write("Create a validated blank CMS workbook from local product data and SKU images.")
+    st.write("Validate SKU data and images, extract canonical product facts, and continue to review.")
 
     attribute_set = st.selectbox(
         "CMS attribute set",
@@ -220,62 +585,74 @@ def cms_workbook_page() -> None:
         st.warning("Select and confirm a Men's Accessories profile before extraction.")
     for issue in configuration_issues(registry, attribute_set):
         st.warning(f"Configuration incomplete: {issue}")
-
-    try:
-        llm_settings = LLMSettings.from_env()
-        settings_error = None
-    except ValueError as exc:
-        llm_settings = LLMSettings()
-        settings_error = str(exc)
     st.info(
         f"{set_names[attribute_set]} · extract, review canonical facts, generate factual copy, "
         "and export separate CMS and QC workbooks."
     )
-    active_vision_route = provider_store().active_route(RoutePurpose.VISION_EXTRACTION)
-    execution_options = ["Fake (offline)", "OpenAI Responses API environment (legacy)"]
-    if active_vision_route is not None:
-        execution_options.append("Active configured provider route (live)")
-    execution_mode = st.radio(
-        "Extraction client",
-        tuple(execution_options),
-        horizontal=True,
-    )
-    if settings_error:
-        st.error(settings_error)
-    elif execution_mode == "OpenAI Responses API environment (legacy)" and not llm_settings.enabled:
-        st.info(llm_settings.disabled_reason)
-    elif execution_mode == "Active configured provider route (live)":
-        assert active_vision_route is not None
-        active_provider = provider_store().get_provider(active_vision_route.provider_id)
-        if not provider_secret_available(
-            active_provider, session_secrets=provider_session_secrets()
-        ):
-            st.error("The active vision provider API key is unavailable in this session.")
+    nvidia_settings = NvidiaSettings.from_env()
+    connection_passed = _show_nvidia_connection(nvidia_settings)
+
     workbook_upload = st.file_uploader("Input workbook", type=["xlsx"])
     image_uploads = st.file_uploader(
         "Product images or ZIP files",
         type=["jpg", "jpeg", "png", "webp", "zip"],
         accept_multiple_files=True,
     )
-
-    if workbook_upload is None:
-        st.info("Upload an .xlsx workbook to begin local validation.")
-        return
-
-    workbook_content = workbook_upload.getvalue()
+    workbook_content = workbook_upload.getvalue() if workbook_upload is not None else b""
     image_upload_data = tuple(
         (upload.name, upload.getvalue()) for upload in image_uploads
     )
-    workbook_result = parse_input_workbook(workbook_content, workbook_upload.name)
-    image_result = parse_uploaded_images(
+    input_digest = _source_digest(
+        workbook_content,
         image_upload_data,
-        tuple(row.sku for row in workbook_result.rows),
-        limits=ResourceLimits.from_env(),
+        attribute_set,
+        "|".join((product_profile or "", NVIDIA_CACHE_KEY, registry.fingerprint)),
     )
-    show_issues(workbook_result.issues + image_result.issues)
+    if st.session_state.get(CMS_INPUT_DIGEST_STATE) != input_digest:
+        st.session_state[CMS_INPUT_DIGEST_STATE] = input_digest
+        for key in (
+            CMS_JOB_STATE,
+            CMS_SOURCE_DIGEST_STATE,
+            CMS_RUN_STATE,
+            CMS_REVIEW_STATE,
+            CMS_PROGRESS_STATE,
+        ):
+            st.session_state.pop(key, None)
+
+    try:
+        limits = ResourceLimits.from_env()
+        limits_error = None
+    except (TypeError, ValueError) as exc:
+        limits = ResourceLimits()
+        limits_error = str(exc)
+    workbook_result = (
+        parse_input_workbook(workbook_content, workbook_upload.name)
+        if workbook_upload is not None
+        else None
+    )
+    image_result = (
+        parse_uploaded_images(
+            image_upload_data,
+            tuple(row.sku for row in workbook_result.rows),
+            limits=limits,
+        )
+        if workbook_result is not None
+        else None
+    )
+
+    st.subheader("Validate workbook and images")
+    if workbook_result is None:
+        st.info("Upload an .xlsx workbook to begin local validation.")
+    else:
+        show_issues(
+            workbook_result.issues
+            + (image_result.issues if image_result is not None else ())
+        )
+    if limits_error:
+        st.error(f"Resource-limit configuration is invalid: {limits_error}")
 
     headers = registry.mappings_by_set[attribute_set]
-    if workbook_result.rows:
+    if workbook_result is not None and workbook_result.rows:
         st.subheader("CMS skeleton preview")
         preview = [
             {
@@ -290,8 +667,27 @@ def cms_workbook_page() -> None:
         if len(workbook_result.rows) > 20:
             st.caption(f"Showing 20 of {len(workbook_result.rows):,} rows.")
 
-    if image_result.images:
-        st.subheader("Matched image preview")
+    st.subheader("SKU/image association preview")
+    if workbook_result is not None and workbook_result.rows:
+        matched_images = image_result.images if image_result is not None else ()
+        st.dataframe(
+            [
+                {
+                    "SKU": row.sku,
+                    "Base code": row.base_code or "",
+                    "Matched images": sum(image.sku == row.sku for image in matched_images),
+                    "Files": ", ".join(
+                        image.filename for image in matched_images if image.sku == row.sku
+                    ),
+                }
+                for row in workbook_result.rows
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.info("SKU/image associations will appear after workbook validation.")
+    if image_result is not None and image_result.images:
         # ponytail: preview is capped; add pagination only if large uploads need visual review.
         for image in image_result.images[:12]:
             with open_oriented_image(image.content) as preview_image:
@@ -306,11 +702,285 @@ def cms_workbook_page() -> None:
         if len(image_result.images) > 12:
             st.caption(f"Showing 12 of {len(image_result.images):,} matched images.")
 
-    if workbook_result.ready and image_result.ready:
-        st.success(
-            f"Ready to process · {len(workbook_result.rows):,} SKU rows · "
-            f"{len(image_result.images):,} matched images"
+    job = None
+    job_id = st.session_state.get(CMS_JOB_STATE)
+    if job_id:
+        try:
+            job = job_database().get_job(job_id)
+        except Exception:
+            st.session_state.pop(CMS_JOB_STATE, None)
+            job_id = None
+
+    st.subheader("Configure PER_SKU or BASE_CODE_SIZE_ONLY mode")
+    groups: tuple[VariantGroup, ...] = ()
+    mode_errors: tuple[str, ...] = ()
+    plan = None
+    if workbook_result is not None and workbook_result.ready:
+        stored_groups = job_database().load_groups(job_id) if job_id else ()
+        groups, mode_errors = _configure_analysis_modes(
+            workbook_result.rows,
+            image_result.images if image_result is not None else (),
+            product_profile,
+            key_prefix=input_digest[:16],
+            stored_groups=stored_groups,
+            editable=job is None,
         )
+        plan = build_request_plan(
+            groups, _vision_context(attribute_set, product_profile)
+        )
+    else:
+        st.info("Analysis modes will be available after workbook validation.")
+
+    mode_configuration = "|".join(
+        f"{group.key}:{group.analysis_mode.value}:{group.representative_sku}"
+        for group in groups
+    )
+    source_digest = sha256(f"{input_digest}\0{mode_configuration}".encode()).hexdigest()
+    if st.session_state.get(CMS_SOURCE_DIGEST_STATE) != source_digest:
+        st.session_state[CMS_SOURCE_DIGEST_STATE] = source_digest
+        if job is not None:
+            st.session_state.pop(CMS_JOB_STATE, None)
+            st.session_state.pop(CMS_RUN_STATE, None)
+            st.session_state.pop(CMS_REVIEW_STATE, None)
+            job = None
+            job_id = None
+
+    stored_items = job_database().list_work_items(job_id) if job_id else ()
+    cached_keys: frozenset[str] = frozenset()
+    if job_id and job is not None and job.context.registry_version == registry.fingerprint:
+        try:
+            cached_keys = cached_attribute_item_keys(job_database(), job_id, registry)
+        except ValueError:
+            cached_keys = frozenset()
+    if job_id:
+        outstanding_keys = {
+            item.key
+            for item in stored_items
+            if item.status
+            in {WorkItemStatus.PENDING, WorkItemStatus.RUNNING, WorkItemStatus.FAILED}
+        }
+        remaining_plan = tuple(
+            item
+            for item in (plan.items if plan is not None else ())
+            if item.key in outstanding_keys and item.key not in cached_keys
+        )
+    else:
+        remaining_plan = plan.items if plan is not None else ()
+    planned_attempts = len(remaining_plan) * (limits.model_retries + 1)
+    planned_image_attempts = sum(len(item.image_assets) for item in remaining_plan) * (
+        limits.model_retries + 1
+    )
+    model_pricing = load_pricing(PRICING_PATH).for_model(NVIDIA_MODEL)
+    estimated_cost = maximum_job_cost(
+        model_pricing,
+        request_count=planned_attempts,
+        image_count=planned_image_attempts,
+    )
+
+    st.subheader("Planned vision-call count")
+    final_count = len(stored_items) if stored_items else len(plan.items) if plan else 0
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("Final planned vision calls", final_count)
+    metric_columns[1].metric("Cached / calls required", f"{len(cached_keys)} / {len(remaining_plan)}")
+    metric_columns[2].metric("Maximum remaining attempts", planned_attempts)
+    st.caption(
+        f"Extraction runtime: NVIDIA NIM · {NVIDIA_MODEL} · "
+        f"image detail {NVIDIA_IMAGE_DETAIL}."
+    )
+    if estimated_cost is not None and model_pricing is not None:
+        st.metric(
+            "Estimated maximum extraction cost",
+            f"{model_pricing.currency} {estimated_cost:.4f}",
+        )
+    else:
+        st.caption(
+            "Estimated extraction cost unavailable: no approved NVIDIA pricing is configured."
+        )
+
+    registry_errors = tuple(configuration_issues(registry, attribute_set))
+    if limits_error:
+        registry_errors += (f"Resource limits: {limits_error}",)
+    checklist = _extraction_checklist(
+        workbook_result,
+        image_result,
+        attribute_set,
+        product_profile,
+        profile_confirmed,
+        plan,
+        nvidia_settings,
+        connection_passed,
+        limits,
+        planned_attempts=planned_attempts,
+        attempted_calls=job.attempted_model_calls if job is not None else 0,
+        estimated_cost=estimated_cost,
+        mode_errors=mode_errors,
+        registry_errors=registry_errors,
+    )
+    may_incur_charges = bool(remaining_plan and nvidia_settings.enabled)
+    charges_confirmed = not may_incur_charges or st.checkbox(
+        "I confirm these provider calls may incur charges.",
+        key=f"cms_charge_confirmation_{source_digest[:16]}",
+    )
+    if may_incur_charges and not charges_confirmed:
+        checklist = ExtractionChecklist(
+            checklist.passed,
+            (*checklist.action_required, "Confirm possible provider charges"),
+        )
+
+    _show_extraction_checklist(checklist)
+
+    failures = sum(item.status == WorkItemStatus.FAILED for item in stored_items)
+    unfinished = sum(
+        item.status in {WorkItemStatus.PENDING, WorkItemStatus.RUNNING}
+        for item in stored_items
+    )
+    run_requested = bool(job_id and st.session_state.get(CMS_RUN_STATE) == job_id)
+    if run_requested:
+        action_label = "Extraction Running…"
+    elif job is not None and job.cancel_requested:
+        action_label = "Resume Extraction"
+    elif failures:
+        action_label = "Retry Failed Extractions"
+    elif job is not None and job.status == JobStatus.RUNNING:
+        action_label = "Resume Extraction"
+    else:
+        action_label = "Run Data Extraction"
+    extraction_finished = bool(stored_items) and not failures and not unfinished
+    action_clicked = False
+    if not extraction_finished:
+        action_clicked = st.button(
+            action_label,
+            type="primary",
+            key=f"cms_extraction_action_{source_digest[:16]}",
+            disabled=not checklist.ready or run_requested,
+        )
+    if run_requested or (job is not None and job.status == JobStatus.RUNNING):
+        if st.button("Cancel Extraction", key=f"cms_cancel_{job_id}"):
+            JobService(job_database()).request_cancellation(job_id)
+            st.session_state.pop(CMS_RUN_STATE, None)
+            st.rerun()
+
+    if action_clicked:
+        fresh_settings = NvidiaSettings.from_env()
+        fresh_connection_passed = _nvidia_connection_passed(fresh_settings)
+        fresh_workbook = (
+            parse_input_workbook(workbook_content, workbook_upload.name)
+            if workbook_upload is not None
+            else None
+        )
+        fresh_images = (
+            parse_uploaded_images(
+                image_upload_data,
+                tuple(row.sku for row in fresh_workbook.rows),
+                limits=limits,
+            )
+            if fresh_workbook is not None
+            else None
+        )
+        fresh_groups = (
+            build_variant_groups(
+                fresh_workbook.rows,
+                fresh_images.images if fresh_images is not None else (),
+                modes={group.key: group.analysis_mode for group in groups},
+                representatives={group.key: group.representative_sku for group in groups},
+                product_profile=product_profile,
+            )
+            if fresh_workbook is not None and fresh_workbook.ready
+            else ()
+        )
+        fresh_plan = (
+            build_request_plan(
+                fresh_groups,
+                _vision_context(attribute_set, product_profile),
+            )
+            if fresh_groups
+            else None
+        )
+        fresh_checklist = _extraction_checklist(
+            fresh_workbook,
+            fresh_images,
+            attribute_set,
+            product_profile,
+            profile_confirmed,
+            fresh_plan,
+            fresh_settings,
+            fresh_connection_passed,
+            limits,
+            planned_attempts=planned_attempts,
+            attempted_calls=job.attempted_model_calls if job is not None else 0,
+            estimated_cost=estimated_cost,
+            mode_errors=mode_errors,
+            registry_errors=registry_errors,
+        )
+        if not fresh_checklist.ready or not charges_confirmed:
+            st.error("Data extraction was not started because server-side validation failed.")
+        else:
+            if job_id is None:
+                assert (
+                    fresh_workbook is not None
+                    and fresh_images is not None
+                    and product_profile is not None
+                )
+                job_id = _create_extraction_job(
+                    fresh_workbook,
+                    fresh_images,
+                    attribute_set,
+                    product_profile,
+                    fresh_groups,
+                )
+                st.session_state[CMS_JOB_STATE] = job_id
+            st.session_state[CMS_RUN_STATE] = job_id
+            st.session_state.pop(CMS_REVIEW_STATE, None)
+            st.rerun()
+
+    if run_requested:
+        try:
+            _run_extraction_job(
+                job_id,
+                image_result.images if image_result is not None else (),
+                NvidiaSettings.from_env(),
+            )
+        except Exception:
+            st.error("Extraction could not complete safely. Inspect the persisted item results.")
+        finally:
+            st.session_state.pop(CMS_RUN_STATE, None)
+        st.rerun()
+
+    st.subheader("Processing progress")
+    progress = st.session_state.get(CMS_PROGRESS_STATE)
+    if isinstance(progress, dict) and progress.get("job_id") == job_id:
+        done = int(progress.get("done", 0))
+        total = int(progress.get("total", 0))
+        st.progress(done / total if total else 1.0)
+        st.caption(f"Completed {done} of {total} work items.")
+    elif job_id:
+        st.caption("No work item has completed in this run yet.")
+    else:
+        st.caption("Progress will appear after extraction starts.")
+
+    st.subheader("Extraction result summary")
+    if job_id:
+        _show_attribute_results(job_database(), job_id)
+        stored_items = job_database().list_work_items(job_id)
+    else:
+        st.info("No extraction results yet.")
+    successful = sum(
+        item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+        for item in stored_items
+    )
+    if st.button(
+        "Continue to Review",
+        type="primary" if successful else "secondary",
+        key=f"cms_continue_review_{source_digest[:16]}",
+        disabled=successful == 0,
+    ):
+        st.session_state[CMS_REVIEW_STATE] = job_id
+        st.rerun()
+    if successful and st.session_state.get(CMS_REVIEW_STATE) == job_id:
+        st.subheader("Review")
+        _show_attribute_review(job_database(), job_id)
+
+    if workbook_result is not None and workbook_result.ready:
         output = build_blank_cms_workbook(workbook_result.rows, headers)
         st.download_button(
             "Download blank CMS workbook",
@@ -318,148 +988,6 @@ def cms_workbook_page() -> None:
             file_name=f"cms_{attribute_set}_blank.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        configuration = "|".join(
-            (
-                execution_mode,
-                product_profile or "",
-                (
-                    _fake_model(attribute_set)
-                    if execution_mode == "Fake (offline)"
-                    else (
-                        active_vision_route.model_id
-                        if execution_mode == "Active configured provider route (live)"
-                        and active_vision_route is not None
-                        else llm_settings.model or "unconfigured"
-                    )
-                ),
-                (
-                    active_vision_route.image_detail or "high"
-                    if execution_mode == "Active configured provider route (live)"
-                    and active_vision_route is not None
-                    else llm_settings.image_detail
-                ),
-                *_contract_versions(attribute_set),
-            )
-        )
-        digest = _source_digest(
-            workbook_content, image_upload_data, attribute_set, configuration
-        )
-        if st.session_state.get(CMS_SOURCE_DIGEST_STATE) != digest:
-            st.session_state[CMS_SOURCE_DIGEST_STATE] = digest
-            st.session_state.pop(CMS_JOB_STATE, None)
-
-        job_id = st.session_state.get(CMS_JOB_STATE)
-        if not job_id:
-            st.subheader("Variant analysis job")
-            st.caption(
-                "Creating a job stores normalized rows, image metadata, and hashes. "
-                "Creation never makes an API request."
-            )
-            configured_provider_unavailable = False
-            active_provider = None
-            if execution_mode == "Active configured provider route (live)":
-                assert active_vision_route is not None
-                active_provider = provider_store().get_provider(active_vision_route.provider_id)
-                configured_provider_unavailable = not provider_secret_available(
-                    active_provider, session_secrets=provider_session_secrets()
-                )
-            live_unavailable = (
-                execution_mode == "OpenAI Responses API environment (legacy)"
-                and not llm_settings.enabled
-            ) or configured_provider_unavailable
-            if st.button(
-                "Create persistent job",
-                type="primary",
-                disabled=live_unavailable or not product_profile or not profile_confirmed,
-            ):
-                try:
-                    prompt_version, schema_version = _contract_versions(attribute_set)
-                    selected_model = (
-                        _fake_model(attribute_set)
-                        if execution_mode == "Fake (offline)"
-                        else (
-                            active_vision_route.model_id
-                            if active_vision_route is not None
-                            and execution_mode == "Active configured provider route (live)"
-                            else llm_settings.model
-                        )
-                    )
-                    selected_detail = (
-                        active_vision_route.image_detail or "high"
-                        if active_vision_route is not None
-                        and execution_mode == "Active configured provider route (live)"
-                        else llm_settings.image_detail
-                    )
-                    provider_cache_key = (
-                        f"{active_provider.cache_key}:{active_vision_route.configuration_version}"
-                        if active_provider is not None
-                        and active_vision_route is not None
-                        and execution_mode == "Active configured provider route (live)"
-                        else ""
-                    )
-                    job_id = JobService(job_database()).create_job(
-                        workbook_result.rows,
-                        image_result.images,
-                        attribute_set=attribute_set,
-                        product_profile=product_profile,
-                        registry_version=registry.fingerprint,
-                        prompt_version=prompt_version,
-                        schema_version=schema_version,
-                        model_identifier=selected_model,
-                        image_detail=selected_detail,
-                        provider_cache_key=provider_cache_key,
-                    )
-                    snapshot_store = provider_store()
-                    snapshot_store.record_job_snapshot(
-                        job_id,
-                        RoutePurpose.VISION_EXTRACTION,
-                        provider=active_provider,
-                        display_name=(
-                            active_provider.display_name
-                            if active_provider is not None
-                            else (
-                                "Offline fake client"
-                                if execution_mode == "Fake (offline)"
-                                else "OpenAI environment configuration"
-                            )
-                        ),
-                        protocol=(
-                            active_provider.protocol.value
-                            if active_provider is not None
-                            else (
-                                "FAKE"
-                                if execution_mode == "Fake (offline)"
-                                else ProviderProtocol.OPENAI_RESPONSES.value
-                            )
-                        ),
-                        base_url_fingerprint=(
-                            active_provider.base_url_fingerprint
-                            if active_provider is not None
-                            else "offline" if execution_mode == "Fake (offline)" else "legacy-openai"
-                        ),
-                        model_id=selected_model or "unconfigured",
-                        provider_configuration_version=(
-                            active_provider.configuration_version if active_provider else 0
-                        ),
-                        adapter_version=(
-                            active_provider.adapter_version if active_provider else "legacy-v1"
-                        ),
-                        prompt_version=prompt_version,
-                        schema_version=schema_version,
-                    )
-                except Exception:
-                    st.error("The persistent job could not be created safely.")
-                else:
-                    st.session_state[CMS_JOB_STATE] = job_id
-                    st.rerun()
-        else:
-            try:
-                show_job_plan(job_id, image_result.images)
-            except Exception:
-                st.session_state.pop(CMS_JOB_STATE, None)
-                st.error("The selected job could not be opened. Create or open it again.")
-    else:
-        st.error("Resolve critical findings before processing or download.")
 
 
 def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) -> None:
@@ -631,183 +1159,10 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
         width="stretch",
     )
     if extraction_job:
-        _attribute_controls(database, job_id, uploaded_images)
         _show_attribute_results(database, job_id)
         _show_attribute_review(database, job_id)
     else:
         st.info("Extraction is blocked because this stored job uses an obsolete contract.")
-
-
-def _attribute_controls(
-    database: JobDatabase,
-    job_id: str,
-    uploaded_images: tuple[UploadedImage, ...],
-) -> None:
-    job = database.get_job(job_id)
-    if job.status not in {
-        JobStatus.READY,
-        JobStatus.RUNNING,
-        JobStatus.PARTIAL_FAILURE,
-        JobStatus.FAILED,
-    }:
-        return
-    attribute_set_name = set_names[job.attribute_set]
-    fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
-    configured_provider_job = bool(job.context.provider_cache_key)
-    stored_items = database.list_work_items(job_id)
-    retry_failed = any(item.status == WorkItemStatus.FAILED for item in stored_items)
-    action = f"Retry failed {attribute_set_name} items" if retry_failed else (
-        f"Resume {attribute_set_name} extraction"
-        if job.status == JobStatus.RUNNING
-        else f"Run {attribute_set_name} extraction"
-    )
-    settings_error = None
-    try:
-        settings = LLMSettings.from_env()
-    except ValueError as exc:
-        settings = LLMSettings()
-        settings_error = str(exc)
-    active_route = None
-    active_provider = None
-    provider_secret = None
-    if configured_provider_job:
-        active_route = provider_store().active_route(RoutePurpose.VISION_EXTRACTION)
-        if active_route is not None:
-            active_provider = provider_store().get_provider(active_route.provider_id)
-            provider_secret = resolve_provider_secret(
-                active_provider, session_secrets=provider_session_secrets()
-            )
-    configured = (job.context.registry_version == registry.fingerprint) and (
-        fake
-        or (
-            configured_provider_job
-            and active_route is not None
-            and active_provider is not None
-            and provider_secret is not None
-            and f"{active_provider.cache_key}:{active_route.configuration_version}"
-            == job.context.provider_cache_key
-            and active_route.model_id == job.context.model_identifier
-            and active_route.image_detail == job.context.image_detail
-        )
-        or (
-            not configured_provider_job
-            and settings.enabled
-            and settings.model == job.context.model_identifier
-            and settings.image_detail == job.context.image_detail
-        )
-    )
-    confirmed = True
-    limits = ResourceLimits.from_env()
-    pricing = load_pricing(PRICING_PATH)
-    model_pricing = pricing.for_model(job.context.model_identifier)
-    remaining_units = sum(
-        item.status in {WorkItemStatus.PENDING, WorkItemStatus.FAILED}
-        for item in stored_items
-    )
-    remaining_attempts = remaining_units * (limits.model_retries + 1)
-    estimated_cost = maximum_job_cost(
-        model_pricing,
-        request_count=remaining_attempts,
-        image_count=len(uploaded_images) * (limits.model_retries + 1),
-    )
-    calls_blocked = not fake and job.attempted_model_calls >= limits.calls_per_job
-    cost_blocked = not fake and estimated_cost is not None and (
-        limits.maximum_estimated_cost is None
-        or estimated_cost > limits.maximum_estimated_cost
-    )
-    if calls_blocked:
-        st.error(
-            "Live processing is blocked because this job has reached its hard model-call limit."
-        )
-    if cost_blocked:
-        st.error(
-            "Live processing is blocked by the estimated-cost circuit breaker. "
-            "Configure an approved maximum at or above the displayed estimate."
-        )
-    if fake:
-        st.caption("Offline fake client selected. No network request or API key is used.")
-    elif configured_provider_job:
-        if not configured:
-            st.info(
-                "Live extraction is disabled because the active vision route changed, "
-                "became unavailable, or has no API key in this session."
-            )
-        elif active_provider is not None and active_route is not None:
-            st.caption(
-                f"Provider: {active_provider.display_name} · protocol: "
-                f"{active_provider.protocol.value} · model: {active_route.model_id}."
-            )
-        confirmed = st.checkbox(
-            "I confirm this configured-provider request and the displayed planned request count.",
-            key=f"live_confirm_{job_id}",
-        )
-        if estimated_cost is None:
-            st.caption("Cost unavailable: no approved matching pricing configuration.")
-    else:
-        if settings_error:
-            st.error(settings_error)
-        elif not configured:
-            st.info(
-                "Live extraction is disabled. Configure the same OPENAI_MODEL and "
-                "OPENAI_IMAGE_DETAIL used when this job was created."
-            )
-        confirmed = st.checkbox(
-            "I confirm this live OpenAI request and the displayed planned request count.",
-            key=f"live_confirm_{job_id}",
-        )
-        if estimated_cost is None:
-            st.caption("Cost unavailable: no approved matching pricing configuration.")
-        elif model_pricing is not None:
-            st.caption(f"Estimated maximum: {model_pricing.currency} {estimated_cost:.4f}.")
-    if not st.button(
-        action,
-        type="primary",
-        key=f"attribute_run_{job_id}_{job.status.value}",
-        disabled=not configured or not confirmed or cost_blocked or calls_blocked,
-    ):
-        return
-
-    progress_bar = st.progress(0.0)
-    progress_text = st.empty()
-
-    def update(done: int, total: int, item) -> None:
-        progress_bar.progress(done / total if total else 1.0)
-        progress_text.caption(
-            f"Processed {done} of {total}: {', '.join(item.represented_skus)}"
-        )
-
-    if fake:
-        client = fake_attribute_client()
-    elif configured_provider_job:
-        assert active_provider is not None and active_route is not None
-        client = create_adapter(active_provider, active_route, provider_secret)
-    else:
-        client = OpenAIResponsesClient(settings)
-    prompt_version, schema_version = _contract_versions(job.attribute_set)
-    try:
-        if job.cancel_requested and not retry_failed:
-            database.clear_cancellation(job_id)
-        with st.spinner(f"Extracting {attribute_set_name} observations…"):
-            run_attribute_job(
-                database,
-                job_id,
-                client,
-                uploaded_images,
-                registry,
-                retry_failed=retry_failed,
-                progress=update,
-                expected_prompt_version=prompt_version,
-                expected_schema_version=schema_version,
-            )
-    except Exception:
-        st.error(
-            f"{attribute_set_name} extraction could not complete safely. "
-            "Inspect failed work items."
-        )
-    finally:
-        if not fake:
-            client.close()
-    st.rerun()
 
 
 def _show_attribute_results(database: JobDatabase, job_id: str) -> None:
@@ -829,12 +1184,14 @@ def _show_attribute_results(database: JobDatabase, job_id: str) -> None:
         for item in items
     )
     failures = sum(item.status == WorkItemStatus.FAILED for item in items)
+    review_required = sum(item.status == WorkItemStatus.REVIEW_REQUIRED for item in items)
     warnings = sum(len(record.vision_result.warnings) for _, record in records)
-    metrics = st.columns(4)
+    metrics = st.columns(5)
     metrics[0].metric("Successful", success)
     metrics[1].metric("Cached", sum(item.cache_hit for item in items))
     metrics[2].metric("Failed", failures)
-    metrics[3].metric("Warnings", warnings)
+    metrics[3].metric("Review required", review_required)
+    metrics[4].metric("Warnings", warnings)
     job = database.get_job(job_id)
     pricing = load_pricing(PRICING_PATH)
     usage = summarize_job_usage(
@@ -1129,70 +1486,23 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
     fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
     limits = ResourceLimits.from_env()
     pricing = load_pricing(PRICING_PATH)
-    live_ready = True
+    nvidia_settings = NvidiaSettings.from_env()
+    live_ready = fake or (
+        nvidia_settings.enabled and _nvidia_connection_passed(nvidia_settings)
+    )
     live_confirmed = True
-    live_settings = None
-    catalog_route = None
-    catalog_provider = None
-    catalog_secret = None
-    configured_provider_job = bool(job.context.provider_cache_key)
     if not fake:
-        catalog_route = provider_store().active_route(RoutePurpose.CATALOG_COPY)
-        if catalog_route is not None:
-            catalog_provider = provider_store().get_provider(catalog_route.provider_id)
-            try:
-                catalog_secret = resolve_provider_secret(
-                    catalog_provider, session_secrets=provider_session_secrets()
-                )
-            except ValueError:
-                catalog_secret = None
-            live_ready = (
-                catalog_provider is not None
-                and (
-                    catalog_provider.authentication_mode == AuthenticationMode.NO_AUTH
-                    or catalog_secret is not None
-                )
-            )
-            if not live_ready:
-                st.info(
-                    "Activate a tested CATALOG_COPY route with an available API key to "
-                    "generate live catalog copy."
-                )
-        elif configured_provider_job:
-            live_ready = False
+        if not live_ready:
             st.info(
-                "Activate a tested CATALOG_COPY route with an available API key to "
-                "generate live catalog copy."
+                "Configure NVIDIA_API_KEY and pass Test NVIDIA Connection in this session "
+                "before generating catalog copy."
             )
-        else:
-            try:
-                live_settings = LLMSettings.from_env()
-                live_ready = live_settings.enabled
-            except ValueError as exc:
-                live_ready = False
-                st.error(str(exc))
-            if not live_ready:
-                st.info(
-                    "Configure OPENAI_API_KEY and OPENAI_MODEL for optional live copy generation."
-                )
         live_confirmed = st.checkbox(
-            "I confirm this text-only catalog-copy request, which may incur provider charges.",
+            "I confirm this NVIDIA catalog-copy request may incur provider charges.",
             key=f"live_catalog_confirm_{job_id}",
         )
-    catalog_model = (
-        "phase6-fake"
-        if fake
-        else (
-            catalog_route.model_id
-            if catalog_route is not None
-            else (live_settings.model if live_settings and live_settings.model else "")
-        )
-    )
-    catalog_route_key = (
-        f"{catalog_provider.cache_key}:{catalog_route.configuration_version}"
-        if catalog_provider is not None and catalog_route is not None
-        else catalog_model
-    )
+    catalog_model = "phase6-fake" if fake else NVIDIA_MODEL
+    catalog_route_key = catalog_model if fake else NVIDIA_CACHE_KEY
     catalog_state = f"catalog_{job_id}_{decision_digest}_{sha256(catalog_route_key.encode()).hexdigest()[:16]}"
     catalogs = st.session_state.get(catalog_state)
     catalog_attempts = len(rows) * 2 * (limits.model_retries + 1)
@@ -1225,42 +1535,24 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
             or catalog_cost_blocked
         ),
     ):
-        client = fake_catalog_client()
+        client = fake_catalog_client() if fake else NvidiaInklingClient(nvidia_settings)
         try:
-            if not fake:
-                if catalog_route is not None:
-                    assert catalog_provider is not None and catalog_route is not None
-                    client = create_adapter(catalog_provider, catalog_route, catalog_secret)
-                else:
-                    assert live_settings is not None
-                    client = OpenAIResponsesClient(live_settings)
-
             provider_store().record_job_snapshot(
                 job_id,
                 RoutePurpose.CATALOG_COPY,
-                provider=catalog_provider,
-                display_name=(
-                    catalog_provider.display_name
-                    if catalog_provider is not None
-                    else "Offline fake client" if fake else "OpenAI environment configuration"
-                ),
+                provider=None,
+                display_name="Offline fake client" if fake else "NVIDIA NIM · Inkling",
                 protocol=(
-                    catalog_provider.protocol.value
-                    if catalog_provider is not None
-                    else "FAKE" if fake else ProviderProtocol.OPENAI_RESPONSES.value
+                    "FAKE" if fake else ProviderProtocol.OPENAI_CHAT_COMPLETIONS.value
                 ),
                 base_url_fingerprint=(
-                    catalog_provider.base_url_fingerprint
-                    if catalog_provider is not None
-                    else "offline" if fake else "legacy-openai"
+                    "offline"
+                    if fake
+                    else sha256(NVIDIA_CHAT_COMPLETIONS_URL.encode()).hexdigest()[:16]
                 ),
                 model_id=catalog_model,
-                provider_configuration_version=(
-                    catalog_provider.configuration_version if catalog_provider else 0
-                ),
-                adapter_version=(
-                    catalog_provider.adapter_version if catalog_provider else "legacy-v1"
-                ),
+                provider_configuration_version=0,
+                adapter_version="fake-v1" if fake else NVIDIA_ADAPTER_VERSION,
                 prompt_version=CONTENT_PROMPT_VERSION,
                 schema_version=CONTENT_SCHEMA_VERSION,
             )
@@ -1552,439 +1844,6 @@ def image_downloader_page() -> None:
         )
 
 
-def llm_providers_page() -> None:
-    st.title("LLM Providers")
-    st.write(
-        "Custom provider configuration currently supports OpenAI-compatible endpoints. "
-        "Providers using a different API protocol require a dedicated adapter."
-    )
-    st.warning(
-        "This application has no user authentication. Provider management is safe only in a "
-        "private development environment; keep the Codespaces port private."
-    )
-    st.caption(
-        "Connection and capability tests send small API requests and may incur provider charges. "
-        "No customer, catalog, file, web-search, or tool data is used."
-    )
-    policy = EndpointPolicy.from_env()
-    if policy.allow_private or policy.allow_insecure_http:
-        st.error(
-            "Development-only local endpoint access is enabled by server configuration. "
-            "Only explicitly allowlisted hosts are accepted; production ignores these flags."
-        )
-    st.info(
-        "In Codespaces, localhost means the Codespace container—not the user’s Windows computer. "
-        "A model running on the user’s laptop is not automatically reachable from Codespaces."
-    )
-
-    store = provider_store()
-    secrets = provider_session_secrets()
-    providers = store.list_providers(include_retired=True)
-    routes = store.list_routes()
-    st.subheader("Provider list")
-    if providers:
-        st.dataframe(
-            [
-                provider_public_row(
-                    provider,
-                    tuple(route for route in routes if route.provider_id == provider.id),
-                    secret_available=provider_secret_available(
-                        provider, session_secrets=secrets
-                    ),
-                )
-                for provider in providers
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-    else:
-        st.info("No provider configurations have been saved.")
-
-    selected_id = st.selectbox(
-        "Add or edit provider",
-        ("", *(provider.id for provider in providers)),
-        format_func=lambda identifier: (
-            "Add new provider"
-            if not identifier
-            else next(
-                f"Edit · {provider.display_name}" for provider in providers if provider.id == identifier
-            )
-        ),
-    )
-    selected = store.get_provider(selected_id) if selected_id else None
-    discovered = tuple(st.session_state.get(f"provider_models_{selected_id}", ()))
-
-    if selected is not None:
-        columns = st.columns(3)
-        if columns[0].button(
-            "Disable" if selected.enabled else "Enable",
-            key=f"toggle_provider_{selected.id}",
-        ):
-            store.set_enabled(selected.id, not selected.enabled)
-            st.rerun()
-        clear_confirmed = columns[1].checkbox(
-            "Confirm clear API key",
-            key=f"clear_provider_confirm_{selected.id}",
-        )
-        if columns[1].button(
-            "Clear API key",
-            disabled=not clear_confirmed,
-            key=f"clear_provider_{selected.id}",
-        ):
-            secrets.pop(selected.id, None)
-            store.clear_secret(selected.id)
-            st.rerun()
-        retire_confirmed = columns[2].checkbox(
-            "Confirm delete/retire",
-            key=f"retire_provider_confirm_{selected.id}",
-        )
-        if columns[2].button(
-            "Delete / retire",
-            disabled=not retire_confirmed,
-            key=f"retire_provider_{selected.id}",
-        ):
-            store.delete_or_retire(selected.id)
-            secrets.pop(selected.id, None)
-            st.rerun()
-
-    encrypted_available = encrypted_mode_available()
-    storage_options = [SecretStorageMode.SESSION_ONLY, SecretStorageMode.ENV_REFERENCE]
-    if encrypted_available or (
-        selected is not None
-        and selected.secret_storage_mode == SecretStorageMode.ENCRYPTED_DATABASE
-    ):
-        storage_options.append(SecretStorageMode.ENCRYPTED_DATABASE)
-    provider_routes = store.list_routes(selected.id) if selected is not None else ()
-    vision_route = next(
-        (route for route in provider_routes if route.purpose == RoutePurpose.VISION_EXTRACTION),
-        None,
-    )
-    catalog_route = next(
-        (route for route in provider_routes if route.purpose == RoutePurpose.CATALOG_COPY),
-        None,
-    )
-
-    with st.form(f"llm_provider_form_{selected_id or 'new'}"):
-        name = st.text_input("Provider Name", value=selected.display_name if selected else "")
-        protocol = st.selectbox(
-            "Protocol",
-            tuple(ProviderProtocol),
-            index=(
-                tuple(ProviderProtocol).index(selected.protocol) if selected is not None else 0
-            ),
-            format_func=lambda value: value.value,
-        )
-        base_url = st.text_input(
-            "Base URL",
-            value=selected.base_url if selected else "https://api.openai.com/v1",
-            help="Enter the API base only. The adapter adds known endpoint paths; /v1 is never added automatically.",
-        )
-        authentication = st.selectbox(
-            "Authentication Mode",
-            tuple(AuthenticationMode),
-            index=(
-                tuple(AuthenticationMode).index(selected.authentication_mode)
-                if selected is not None
-                else 0
-            ),
-            format_func=lambda value: value.value,
-        )
-        api_header = st.text_input(
-            "API key header name",
-            value=selected.api_key_header_name if selected and selected.api_key_header_name else "x-api-key",
-            disabled=authentication != AuthenticationMode.API_KEY_HEADER,
-        )
-        storage = st.selectbox(
-            "Secret Storage Mode",
-            tuple(storage_options),
-            index=(
-                tuple(storage_options).index(selected.secret_storage_mode)
-                if selected is not None and selected.secret_storage_mode in storage_options
-                else 0
-            ),
-            format_func=lambda value: value.value,
-            disabled=authentication == AuthenticationMode.NO_AUTH,
-        )
-        if storage == SecretStorageMode.SESSION_ONLY:
-            st.caption(
-                "SESSION_ONLY is the default. The key stays in this server session only and is "
-                "lost on session/server restart; unattended resume then requires re-entry."
-            )
-        elif storage == SecretStorageMode.ENCRYPTED_DATABASE and not encrypted_available:
-            st.error(
-                "ENCRYPTED_DATABASE is unavailable without a valid server master key and, in "
-                "production, application authentication."
-            )
-        environment_name = st.text_input(
-            "Environment Secret Name",
-            value=(
-                selected.secret_reference
-                if selected
-                and selected.secret_storage_mode == SecretStorageMode.ENV_REFERENCE
-                and selected.secret_reference
-                else ""
-            ),
-            disabled=storage != SecretStorageMode.ENV_REFERENCE,
-        )
-        api_key = st.text_input(
-            "API Key",
-            type="password",
-            value="",
-            help="Blank while editing keeps the existing encrypted or session key. The key is never sent back to this field.",
-            disabled=(
-                authentication == AuthenticationMode.NO_AUTH
-                or storage == SecretStorageMode.ENV_REFERENCE
-            ),
-        )
-        request_timeout = st.number_input(
-            "Request Timeout",
-            min_value=1.0,
-            max_value=300.0,
-            value=float(selected.request_timeout if selected else 30.0),
-        )
-        if selected is not None:
-            st.caption(
-                f"Effective endpoints · models: {endpoint_url(selected.base_url, 'models')} · "
-                f"generation: {endpoint_url(selected.base_url, 'responses' if selected.protocol == ProviderProtocol.OPENAI_RESPONSES else 'chat/completions')}"
-            )
-        model_choice = st.selectbox(
-            "Discovered model (optional)",
-            discovered,
-            index=None,
-            placeholder=(
-                "Select a discovered model" if discovered else "Fetch Models or enter IDs manually"
-            ),
-        )
-        vision_model = st.text_input(
-            "Vision Model",
-            value=vision_route.model_id if vision_route else "",
-            help="Manual model-ID fallback remains available when listing is unsupported.",
-        )
-        catalog_model = st.text_input(
-            "Catalog/Text Model",
-            value=catalog_route.model_id if catalog_route else "",
-            help="The same model may be used for both purposes.",
-        )
-        if model_choice:
-            use_for = st.radio(
-                "Use discovered model for",
-                tuple(RoutePurpose),
-                horizontal=True,
-                format_func=lambda value: value.value,
-            )
-            if use_for == RoutePurpose.VISION_EXTRACTION:
-                vision_model = model_choice
-            else:
-                catalog_model = model_choice
-        maximum_output_tokens = st.number_input(
-            "Maximum Output Tokens",
-            min_value=1,
-            max_value=100_000,
-            value=int(
-                max(
-                    vision_route.maximum_output_tokens if vision_route else 1_024,
-                    catalog_route.maximum_output_tokens if catalog_route else 1_024,
-                )
-            ),
-        )
-        image_detail = st.selectbox(
-            "Vision image detail",
-            ("auto", "low", "high"),
-            index=("auto", "low", "high").index(
-                vision_route.image_detail if vision_route and vision_route.image_detail else "high"
-            ),
-        )
-        test_target = st.selectbox(
-            "Text / structured test target",
-            tuple(RoutePurpose),
-            format_func=lambda value: value.value,
-        )
-        confirm_replace = st.checkbox(
-            "Confirm replacement of any currently active route for the selected purpose(s)"
-        )
-        activation_purposes = st.multiselect(
-            "Purposes to activate",
-            tuple(RoutePurpose),
-            format_func=lambda value: value.value,
-        )
-        st.warning("Tests send small requests and may incur provider charges.")
-        actions = st.columns(3)
-        save = actions[0].form_submit_button("Save")
-        fetch = actions[1].form_submit_button("Fetch Models / Refresh")
-        text_test = actions[2].form_submit_button("Test Connection")
-        structured_test = actions[0].form_submit_button("Test Structured Output")
-        vision_test = actions[1].form_submit_button("Test Vision")
-        activate = actions[2].form_submit_button("Save and Activate", type="primary")
-
-    action_requested = any((save, fetch, text_test, structured_test, vision_test, activate))
-    if action_requested:
-        try:
-            saved = store.save_provider(
-                ProviderDraft(
-                    display_name=name,
-                    protocol=protocol,
-                    base_url=base_url,
-                    authentication_mode=authentication,
-                    api_key_header_name=api_header,
-                    secret_storage_mode=storage,
-                    secret_reference=environment_name or None,
-                    request_timeout=request_timeout,
-                ),
-                provider_id=selected.id if selected else None,
-                api_key=api_key or None,
-                policy=policy,
-            )
-            if storage == SecretStorageMode.SESSION_ONLY and api_key:
-                secrets[saved.id] = SecretStr(api_key)
-            elif storage != SecretStorageMode.SESSION_ONLY or (
-                authentication == AuthenticationMode.NO_AUTH
-            ):
-                secrets.pop(saved.id, None)
-            saved_routes = {}
-            if vision_model.strip():
-                saved_routes[RoutePurpose.VISION_EXTRACTION] = store.save_route(
-                    saved.id,
-                    RoutePurpose.VISION_EXTRACTION,
-                    vision_model,
-                    timeout=request_timeout,
-                    maximum_output_tokens=maximum_output_tokens,
-                    image_detail=image_detail,
-                )
-            if catalog_model.strip():
-                saved_routes[RoutePurpose.CATALOG_COPY] = store.save_route(
-                    saved.id,
-                    RoutePurpose.CATALOG_COPY,
-                    catalog_model,
-                    timeout=request_timeout,
-                    maximum_output_tokens=maximum_output_tokens,
-                )
-            saved = store.get_provider(saved.id)
-            secret = resolve_provider_secret(saved, session_secrets=secrets)
-            if saved.authentication_mode != AuthenticationMode.NO_AUTH and secret is None and (
-                fetch or text_test or structured_test or vision_test or activate
-            ):
-                raise ValueError("An API key is required for this action.")
-            target_route = saved_routes.get(test_target)
-            if fetch:
-                discovery_route = target_route or ModelRoute(
-                    id="model-discovery",
-                    purpose=RoutePurpose.CATALOG_COPY,
-                    provider_id=saved.id,
-                    model_id="model-discovery",
-                    active=False,
-                    enabled=True,
-                    timeout=request_timeout,
-                    maximum_output_tokens=64,
-                    image_detail=None,
-                    configuration_version=1,
-                    created_at=saved.created_at,
-                    updated_at=saved.updated_at,
-                )
-                adapter = create_adapter(saved, discovery_route, secret, policy=policy)
-                try:
-                    st.session_state[f"provider_models_{saved.id}"] = discover_models(
-                        store, adapter, refresh=True
-                    )
-                finally:
-                    adapter.close()
-            if text_test or structured_test:
-                if target_route is None:
-                    raise ValueError("Save a model ID for the selected test target first.")
-                adapter = create_adapter(saved, target_route, secret, policy=policy)
-                try:
-                    result = (
-                        test_text_connection(adapter)
-                        if text_test
-                        else test_structured_output(adapter)
-                    )
-                finally:
-                    adapter.close()
-                pricing_model = load_pricing(PRICING_PATH).for_model(target_route.model_id)
-                cost = usage_cost(pricing_model, result.usage)
-                if cost is not None and pricing_model is not None:
-                    result = result.model_copy(
-                        update={"cost": f"{pricing_model.currency} {cost}"}
-                    )
-                store.record_test(saved.id, target_route.model_id, result)
-                st.session_state[f"provider_test_{saved.id}"] = result.public_summary()
-            if vision_test:
-                target_route = saved_routes.get(RoutePurpose.VISION_EXTRACTION)
-                if target_route is None:
-                    raise ValueError("Save a vision model ID before testing vision.")
-                adapter = create_adapter(saved, target_route, secret, policy=policy)
-                try:
-                    result = test_vision(adapter)
-                finally:
-                    adapter.close()
-                pricing_model = load_pricing(PRICING_PATH).for_model(target_route.model_id)
-                cost = usage_cost(pricing_model, result.usage, image_count=1)
-                if cost is not None and pricing_model is not None:
-                    result = result.model_copy(
-                        update={"cost": f"{pricing_model.currency} {cost}"}
-                    )
-                store.record_test(saved.id, target_route.model_id, result)
-                st.session_state[f"provider_test_{saved.id}"] = result.public_summary()
-            if activate:
-                if not activation_purposes:
-                    raise ValueError("Select at least one purpose to activate.")
-                for purpose in activation_purposes:
-                    route = saved_routes.get(purpose)
-                    if route is None:
-                        raise ValueError(f"Save a model ID for {purpose.value} before activation.")
-                    store.activate_route(
-                        route.id,
-                        secret_available=provider_secret_available(
-                            saved, session_secrets=secrets
-                        ),
-                        confirm_replace=confirm_replace,
-                    )
-        except ProviderRequestError as exc:
-            if fetch and exc.category == FailureCategory.UNSUPPORTED_ENDPOINT:
-                st.warning("Model listing unsupported. Enter the model ID manually and test it before activation.")
-            else:
-                st.error(str(exc))
-        except ValueError as exc:
-            st.error(str(exc))
-        else:
-            st.success("Provider configuration saved safely.")
-            st.rerun()
-
-    if selected is not None:
-        if result := st.session_state.get(f"provider_test_{selected.id}"):
-            st.subheader("Latest sanitized capability test")
-            st.json(result)
-        st.subheader("Saved routes")
-        pricing = load_pricing(PRICING_PATH)
-        st.dataframe(
-            [
-                {
-                    "Purpose": route.purpose.value,
-                    "Provider": selected.display_name,
-                    "Effective base URL": selected.base_url,
-                    "Protocol": selected.protocol.value,
-                    "Model ID": route.model_id,
-                    "Verified capabilities": store.capability(
-                        selected.id, route.model_id
-                    ).model_dump(mode="json"),
-                    "Last test time": store.capability(
-                        selected.id, route.model_id
-                    ).last_tested_at
-                    or "",
-                    "Secret mode": selected.secret_storage_mode.value,
-                    "Pricing status": (
-                        "Configured and approved"
-                        if pricing.for_model(route.model_id) is not None
-                        else "Cost unavailable"
-                    ),
-                    "Active": route.active,
-                }
-                for route in provider_routes
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-
-
 def attribute_registry_page() -> None:
     st.title("Attribute Registry")
     st.write("Read-only view of the validated CMS attribute registry.")
@@ -2099,6 +1958,7 @@ def job_history_page() -> None:
     )
     job = database.get_job(selected_id)
     extraction_job = _is_extraction_job(job)
+    legacy_extraction_job = _is_legacy_extraction_job(job)
     groups = database.load_groups(selected_id)
     items = database.list_work_items(selected_id)
     summary = next(summary for summary in jobs if summary.id == selected_id)
@@ -2163,7 +2023,7 @@ def job_history_page() -> None:
             hide_index=True,
             width="stretch",
         )
-        if extraction_job:
+        if extraction_job or legacy_extraction_job:
             st.info(
                 "Re-upload the same validated workbook and images in CMS Generator to retry "
                 "safely; image bytes are not stored in SQLite."
@@ -2173,7 +2033,7 @@ def job_history_page() -> None:
         ):
             service.retry_failed_items(selected_id)
             st.rerun()
-    if not extraction_job and job.status in {
+    if not extraction_job and not legacy_extraction_job and job.status in {
         JobStatus.UPLOADED,
         JobStatus.VALIDATING,
         JobStatus.READY,
@@ -2187,6 +2047,12 @@ def job_history_page() -> None:
     if extraction_job:
         _show_attribute_results(database, selected_id)
         _show_attribute_review(database, selected_id)
+    elif legacy_extraction_job:
+        st.info(
+            "This pre-input_data extraction is read-only. Completed results and artifacts "
+            "remain available; unfinished work requires a new upload."
+        )
+        _show_attribute_results(database, selected_id)
 
     st.subheader("Artifacts")
     artifacts = database.list_artifacts(selected_id)
@@ -2244,7 +2110,6 @@ page = st.navigation(
         st.Page(cms_workbook_page, title="CMS Generator", default=True),
         st.Page(image_downloader_page, title="Image Downloader"),
         st.Page(attribute_registry_page, title="Attribute Registry"),
-        st.Page(llm_providers_page, title="LLM Providers"),
         st.Page(job_history_page, title="Job History"),
         st.Page(release_readiness_page, title="Release Readiness"),
     ]

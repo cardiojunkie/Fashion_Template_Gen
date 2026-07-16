@@ -86,7 +86,7 @@ class CacheContext(BaseModel):
 
 
 class PlannedWorkItem(BaseModel):
-    schema_version: str = "1"
+    schema_version: str = "2"
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str
@@ -95,7 +95,7 @@ class PlannedWorkItem(BaseModel):
     represented_skus: tuple[str, ...]
     representative_sku: str
     ordered_identifiers: tuple[str, ...]
-    normalized_model_data: tuple[tuple[str, str], ...]
+    normalized_input_data: tuple[tuple[str, str], ...]
     image_assets: tuple[ImageAsset, ...]
     cache_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     cache_payload_json: str
@@ -359,7 +359,7 @@ def extract_labeled_values(value: str | None) -> dict[str, tuple[str, ...]]:
 def _signals(
     rows: Sequence[InputRow], selected_profile: str | None = None
 ) -> dict[str, tuple[str, ...] | bool]:
-    texts = tuple(row.model_code_input_data or "" for row in rows)
+    texts = tuple(row.input_data or "" for row in rows)
     labeled = _labeled_values(texts)
     colors = tuple(
         sorted(
@@ -557,7 +557,7 @@ def build_cache_payload(
     *,
     analysis_mode: AnalysisMode | str,
     ordered_identifiers: Sequence[str],
-    model_code_input_data: Sequence[tuple[str, str | None]],
+    input_data: Sequence[tuple[str, str | None]],
     image_assets: Sequence[ImageAsset],
     context: CacheContext,
     representative_sku: str | None = None,
@@ -568,8 +568,8 @@ def build_cache_payload(
     return {
         "analysis_mode": AnalysisMode(analysis_mode).value,
         "ordered_identifiers": list(ordered_identifiers),
-        "model_code_input_data": [
-            [sku, _normalized_text(value)] for sku, value in model_code_input_data
+        "input_data": [
+            [sku, _normalized_text(value)] for sku, value in input_data
         ],
         "row_specific_data": [
             [
@@ -599,7 +599,7 @@ def build_cache_key(
     *,
     analysis_mode: AnalysisMode | str,
     ordered_identifiers: Sequence[str],
-    model_code_input_data: Sequence[tuple[str, str | None]],
+    input_data: Sequence[tuple[str, str | None]],
     image_assets: Sequence[ImageAsset],
     context: CacheContext,
     representative_sku: str | None = None,
@@ -610,7 +610,7 @@ def build_cache_key(
     payload = build_cache_payload(
         analysis_mode=analysis_mode,
         ordered_identifiers=ordered_identifiers,
-        model_code_input_data=model_code_input_data,
+        input_data=input_data,
         image_assets=image_assets,
         context=context,
         representative_sku=representative_sku,
@@ -634,15 +634,15 @@ def build_request_plan(groups: Sequence[VariantGroup], context: CacheContext) ->
                 image for image in group.images if image.sku == representative
             )
             identifiers = (group.key, *represented_skus)
-            model_data = tuple(
-                (row.sku, _normalized_text(row.model_code_input_data))
+            normalized_input_data = tuple(
+                (row.sku, _normalized_text(row.input_data))
                 for row in relevant_rows
             )
             cache_payload = build_cache_payload(
                 analysis_mode=group.analysis_mode,
                 ordered_identifiers=identifiers,
-                model_code_input_data=tuple(
-                    (row.sku, row.model_code_input_data) for row in relevant_rows
+                input_data=tuple(
+                    (row.sku, row.input_data) for row in relevant_rows
                 ),
                 image_assets=selected_images,
                 context=context,
@@ -679,7 +679,7 @@ def build_request_plan(groups: Sequence[VariantGroup], context: CacheContext) ->
                     represented_skus=represented_skus,
                     representative_sku=representative,
                     ordered_identifiers=identifiers,
-                    normalized_model_data=model_data,
+                    normalized_input_data=normalized_input_data,
                     image_assets=selected_images,
                     cache_key=cache_key,
                     cache_payload_json=cache_payload_json,
