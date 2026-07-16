@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from decimal import Decimal
+import json
+import time
 from typing import Any
 
+from fashion_cms.config import ModelPricing, ResourceLimits, usage_cost
 from fashion_cms.database import InvalidStateTransition, JobDatabase, JobRecord, WorkItemRecord
 from fashion_cms.llm_service import sanitize_error
 from fashion_cms.models import AnalysisMode, InputRow, JobStatus, UploadedImage, WorkItemStatus
@@ -27,6 +33,29 @@ ResultValidator = Callable[
     [WorkItemRecord, Mapping[str, object]], Mapping[str, object]
 ]
 ProgressCallback = Callable[[int, int, WorkItemRecord], None]
+
+
+@dataclass(frozen=True)
+class UnitUsage:
+    group_key: str
+    skus: tuple[str, ...]
+    attempted_calls: int
+    retries: int
+    cache_hit: bool
+    usage: dict[str, int]
+    cost: Decimal | None
+
+
+@dataclass(frozen=True)
+class JobUsage:
+    attempted_calls: int
+    successful_calls: int
+    retries: int
+    failed_calls: int
+    cache_hits: int
+    usage: dict[str, int]
+    cost: Decimal | None
+    units: tuple[UnitUsage, ...]
 
 
 def fake_extract(item: WorkItemRecord) -> Mapping[str, Any]:
@@ -146,7 +175,9 @@ class JobService:
         *,
         result_validator: ResultValidator | None = None,
         progress: ProgressCallback | None = None,
+        limits: ResourceLimits | None = None,
     ) -> JobRecord:
+        configuration = limits or ResourceLimits.from_env()
         job = self.database.get_job(job_id)
         if job.status == JobStatus.COMPLETED:
             return job
@@ -166,29 +197,15 @@ class JobService:
             job_id,
             (WorkItemStatus.PENDING, WorkItemStatus.RUNNING),
         )
-        for position, item in enumerate(items, start=1):
-            self.database.mark_item_running(job_id, item.key)
+        started = time.monotonic()
+        pending = iter(items)
+        active: dict[Future[Mapping[str, Any]], WorkItemRecord] = {}
+        done_count = 0
+        stop_reason: str | None = None
+
+        def save_result(item: WorkItemRecord, result: Mapping[str, Any]) -> None:
+            nonlocal done_count
             try:
-                cached = self.database.get_cached_result(
-                    item.cache_key, item.cache_payload_json
-                )
-                if cached is not None and result_validator is not None:
-                    try:
-                        cached = dict(result_validator(item, cached))
-                    except Exception:
-                        self.database.delete_cached_result(
-                            item.cache_key, item.cache_payload_json
-                        )
-                        cached = None
-                if cached is not None:
-                    self.database.complete_item_with_result(
-                        item,
-                        cached,
-                        cache_hit=True,
-                        review_required=bool(cached.get("review_required")),
-                    )
-                    continue
-                result = extractor(item)
                 if not isinstance(result, Mapping):
                     raise TypeError("Fake extractor must return a mapping.")
                 if result_validator is not None:
@@ -214,8 +231,84 @@ class JobService:
                     error,
                     safe_metadata,
                 )
+            done_count += 1
             if progress is not None:
-                progress(position, len(items), item)
+                progress(done_count, len(items), item)
+
+        def submit_next(executor: ThreadPoolExecutor) -> bool:
+            nonlocal done_count, stop_reason
+            while True:
+                if self.database.cancellation_requested(job_id):
+                    return False
+                if time.monotonic() - started >= configuration.job_runtime_seconds:
+                    stop_reason = "Job runtime limit was exceeded."
+                    return False
+                try:
+                    item = next(pending)
+                except StopIteration:
+                    return False
+                cached = self.database.get_cached_result(
+                    item.cache_key, item.cache_payload_json
+                )
+                if cached is not None and result_validator is not None:
+                    try:
+                        cached = dict(result_validator(item, cached))
+                    except Exception:
+                        self.database.delete_cached_result(
+                            item.cache_key, item.cache_payload_json
+                        )
+                        cached = None
+                if cached is not None:
+                    self.database.mark_item_running(job_id, item.key)
+                    self.database.complete_item_with_result(
+                        item,
+                        cached,
+                        cache_hit=True,
+                        review_required=bool(cached.get("review_required")),
+                    )
+                    done_count += 1
+                    if progress is not None:
+                        progress(done_count, len(items), item)
+                    continue
+                self.database.mark_item_running(job_id, item.key)
+                active[executor.submit(extractor, item)] = item
+                return True
+
+        with ThreadPoolExecutor(
+            max_workers=configuration.model_concurrency,
+            thread_name_prefix="model-request",
+        ) as executor:
+            for _ in range(configuration.model_concurrency):
+                if not submit_next(executor):
+                    break
+            while active:
+                completed, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in sorted(completed, key=lambda value: active[value].position):
+                    item = active.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = _failed_result(exc)
+                    if isinstance(result, _Failed):
+                        metadata = getattr(result.error, "request_metadata", None)
+                        error = _safe_error(result.error)
+                        safe_metadata = (
+                            _safe_request_metadata(metadata)
+                            if isinstance(metadata, Mapping)
+                            else None
+                        )
+                        if isinstance(safe_metadata, dict):
+                            safe_metadata["error"] = error
+                        self.database.fail_item(item, error, safe_metadata)
+                        done_count += 1
+                        if progress is not None:
+                            progress(done_count, len(items), item)
+                    else:
+                        save_result(item, result)
+                while len(active) < configuration.model_concurrency and submit_next(executor):
+                    pass
+        if stop_reason is not None:
+            self.database.fail_pending_items(job_id, stop_reason)
         return self._finalize(job_id)
 
     def retry_failed_items(
@@ -225,7 +318,9 @@ class JobService:
         *,
         result_validator: ResultValidator | None = None,
         progress: ProgressCallback | None = None,
+        limits: ResourceLimits | None = None,
     ) -> JobRecord:
+        self.database.clear_cancellation(job_id)
         if not self.database.prepare_failed_retry(job_id):
             return self.database.get_job(job_id)
         return self.run_job(
@@ -233,6 +328,7 @@ class JobService:
             extractor,
             result_validator=result_validator,
             progress=progress,
+            limits=limits,
         )
 
     def resume_job(
@@ -242,7 +338,9 @@ class JobService:
         *,
         result_validator: ResultValidator | None = None,
         progress: ProgressCallback | None = None,
+        limits: ResourceLimits | None = None,
     ) -> JobRecord:
+        self.database.clear_cancellation(job_id)
         job = self.database.get_job(job_id)
         if job.status == JobStatus.UPLOADED:
             job = self.database.transition_job(job_id, JobStatus.VALIDATING)
@@ -255,6 +353,7 @@ class JobService:
             extractor,
             result_validator=result_validator,
             progress=progress,
+            limits=limits,
         )
 
     def _finalize(self, job_id: str) -> JobRecord:
@@ -273,10 +372,89 @@ class JobService:
             target = JobStatus.REVIEW_REQUIRED
         elif items and counts[WorkItemStatus.COMPLETED] == len(items):
             target = JobStatus.COMPLETED
+        elif counts[WorkItemStatus.PENDING] or counts[WorkItemStatus.RUNNING]:
+            target = JobStatus.PARTIAL_FAILURE
         else:
             target = JobStatus.FAILED
         self.database.transition_job(job_id, target)
         return self.database.get_job(job_id)
+
+    def request_cancellation(self, job_id: str) -> JobRecord:
+        return self.database.request_cancellation(job_id)
+
+
+@dataclass(frozen=True)
+class _Failed:
+    error: Exception
+
+
+def _failed_result(error: Exception) -> _Failed:
+    return _Failed(error)
+
+
+def summarize_job_usage(
+    database: JobDatabase,
+    job_id: str,
+    pricing: ModelPricing | None = None,
+) -> JobUsage:
+    units = []
+    totals: dict[str, int] = {}
+    total_cost: Decimal | None = Decimal(0) if pricing is not None else None
+    for item in database.list_work_items(job_id):
+        metadata = item.request_metadata or {}
+        usage = {
+            str(key): value
+            for key, value in (metadata.get("usage") or {}).items()
+            if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)
+        } if isinstance(metadata.get("usage"), Mapping) else {}
+        for key, value in usage.items():
+            totals[key] = totals.get(key, 0) + value
+        metadata_retries = metadata.get("retry_count", 0)
+        metadata_retries = (
+            metadata_retries
+            if isinstance(metadata_retries, int) and metadata_retries >= 0
+            else 0
+        )
+        retries = item.provider_retry_count or metadata_retries
+        attempted = item.attempted_model_calls
+        if not attempted and not item.cache_hit and item.status != WorkItemStatus.PENDING:
+            attempted = 1 + retries
+        try:
+            image_count = len(json.loads(item.cache_payload_json).get("selected_images", ()))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            image_count = 0
+        cost = usage_cost(pricing, usage, image_count=image_count)
+        if total_cost is not None:
+            if cost is None:
+                total_cost = None
+            else:
+                total_cost += cost
+        units.append(
+            UnitUsage(
+                group_key=item.group_key,
+                skus=item.represented_skus,
+                attempted_calls=attempted,
+                retries=retries,
+                cache_hit=item.cache_hit,
+                usage=usage,
+                cost=cost,
+            )
+        )
+    items = database.list_work_items(job_id)
+    return JobUsage(
+        attempted_calls=sum(unit.attempted_calls for unit in units),
+        successful_calls=sum(
+            not item.cache_hit
+            and item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+            for item in items
+        ),
+        retries=sum(unit.retries for unit in units),
+        failed_calls=sum(item.status == WorkItemStatus.FAILED for item in items),
+        cache_hits=sum(item.cache_hit for item in items),
+        usage=totals,
+        cost=total_cost,
+        units=tuple(units),
+    )
 
 
 def create_job(database: JobDatabase, *args: Any, **kwargs: Any) -> str:

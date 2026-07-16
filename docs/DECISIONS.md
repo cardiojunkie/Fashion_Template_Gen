@@ -42,3 +42,11 @@ These defaults satisfy the untrusted-input and data-loss boundaries in the produ
 - Size-only groups may reuse bullets and keywords only in confirmed `BASE_CODE_SIZE_ONLY` mode when all non-size accepted facts match and group warnings show no material text/pack difference. Titles remain SKU-specific. `PER_SKU` never shares copy.
 - Only an unchanged reviewer-accepted broad image-derived color receives the yellow fill and inference note. A reviewer edit is the higher-priority source and is therefore not labeled as image inference.
 - Registry descriptions currently repeat overlapping field names without defining semantic differences. Affected proposals receive review warnings; the application does not duplicate or invent distinctions pending approved registry definitions.
+
+## 2026-07-16 — Phase 8 release-candidate boundaries
+
+- Release readiness is a versioned central report with mandatory `PASS`, `FAIL`, `BLOCKED_USER_DECISION`, `NOT_RUN`, or `NOT_APPLICABLE` results. The dashboard derives its verdict from that report and cannot call the application production-ready while a mandatory gate is unresolved.
+- SQLite schema v5 persists cancellation and actual provider-attempt counters. In-process bounded workers stop scheduling after cancellation, preserve completed units, leave unscheduled work resumable, and enforce one persistent per-job model-call circuit across extraction and catalog copy.
+- Resource limits are one validated environment-backed configuration. Approved model pricing and evaluation thresholds remain separate versioned JSON files; both are pending, so missing cost is displayed as unavailable and automatic acceptance remains review-required.
+- Uploaded workbooks, ZIPs, and images remain in memory rather than being extracted to disk. Durable cleanup is disabled until retention approval; root-scoped cleanup provides dry-run, symlink refusal, active-descendant protection, and idempotency for an approved future schedule.
+- `0.1.0-rc1` is an unpublished engineering release candidate. No host, container, authentication system, model, price, threshold, retention period, or missing business rule was selected on the user's behalf.

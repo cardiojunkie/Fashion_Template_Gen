@@ -2,10 +2,16 @@
 
 A phased Streamlit application for turning fashion-product inputs and SKU-linked images into validated, auditable CMS upload workbooks.
 
-Phase 7 supports all seven CMS attribute sets through evidence-aware extraction, canonical
+Release candidate `0.1.0-rc1` supports all seven CMS attribute sets through evidence-aware extraction, canonical
 normalization, persisted review, factual text-only catalog copy, exact per-set CMS workbooks, and
 separate QC workbooks. Live OpenAI calls remain optional and explicitly confirmed; fake extraction
 and copy clients keep the default workflow and tests offline.
+
+Phase 8 adds centralized release gates, deterministic evaluation tooling, configurable resource and
+cost limits, bounded model concurrency, persistent call accounting, cancellation/resume, partial
+exports, database backup, cleanup safety, and production/user documentation. The candidate is not
+approved for production: human golden data, live model comparison, business rules, hosting, and
+authentication remain blocked in `docs/releases/0.1.0-rc1/USER_SIGNOFF.md`.
 
 The existing workbook validation, blank CMS export, SSRF-safe 1500 × 1500 image downloader,
 persistent jobs, Attribute Registry, and Job History remain available.
@@ -94,6 +100,7 @@ Use `.env.example` as a name-only reference; do not put a real secret in Git.
 python -m pytest
 ruff check .
 python -m fashion_cms.registry config/attribute_registry.xlsx
+python -m fashion_cms.release_gates docs/releases/0.1.0-rc1/release-gates.json
 ```
 
 The default suite uses only the fake client. When credentials are intentionally configured, run
@@ -135,3 +142,4 @@ Restart Streamlit after replacing the workbook. The active header-scoped alias m
 `A-Line Fit` to the permitted `A-Line` value for `attributes__fit_type` only.
 
 Project scope and phase gates live in `PLAN.md`; current progress lives in `docs/STATUS.md`.
+The complete release checklist and operational guides live in `docs/releases/0.1.0-rc1/`.

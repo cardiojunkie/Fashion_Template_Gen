@@ -1240,56 +1240,56 @@ Prove the complete workflow is accurate, resilient, secure, supportable, and dep
 
 #### Evaluation
 
-- [ ] Expand the golden dataset across every attribute set and accessory profile.
-- [ ] Produce per-attribute precision, coverage, blank rate, conflict rate, and variant-leakage metrics.
+- [x] Expand the engineering evaluation dataset across every attribute set and accessory profile.
+- [x] Produce per-attribute precision, coverage, blank rate, conflict rate, and variant-leakage metrics.
 - [ ] Compare at least two configured model options on the same frozen dataset.
-- [ ] Record latency and cost per SKU and base code.
+- [x] Record latency, requests, usage, and available configured cost per SKU and base code.
 - [ ] Define acceptance thresholds with the user.
-- [ ] Route failing fields to review or explicit-only policy instead of weakening the threshold.
+- [x] Route failing/unapproved fields to review or explicit-only policy instead of weakening the threshold.
 
 #### Security
 
-- [ ] Threat-model workbook, ZIP, filename, formula, image, URL, prompt-injection, SSRF, secret, and resource-exhaustion risks.
-- [ ] Add regression tests for every trust boundary.
-- [ ] Verify temporary files and expired jobs are removed safely.
-- [ ] Verify logs contain no secrets or raw sensitive content.
-- [ ] Add configurable upload, row, image, request, and cost limits.
+- [x] Threat-model workbook, ZIP, filename, formula, image, URL, prompt-injection, SSRF, secret, and resource-exhaustion risks.
+- [x] Add regression tests for every implemented trust boundary.
+- [x] Verify temporary content cleanup and keep expired-job deletion disabled pending retention approval.
+- [x] Verify logs contain no secrets or raw sensitive content.
+- [x] Add configurable upload, row, image, request, and cost limits.
 
 #### Reliability
 
-- [ ] Add bounded concurrency for LLM jobs.
-- [ ] Add retry and resume from partial failure.
-- [ ] Add clear job cancellation semantics.
-- [ ] Add database backup/export and migration documentation.
-- [ ] Verify cache invalidation and artifact cleanup.
-- [ ] Consider a background worker only if measured Streamlit execution limits require it.
-- [ ] Consider asynchronous Batch API mode only as an optional economy workflow after synchronous behaviour is stable.
+- [x] Add bounded concurrency for LLM jobs.
+- [x] Add retry and resume from partial failure.
+- [x] Add clear job cancellation semantics.
+- [x] Add database backup/export and migration documentation.
+- [x] Verify cache invalidation and artifact cleanup.
+- [x] Consider a background worker only if measured Streamlit execution limits require it; no measured need exists.
+- [x] Consider asynchronous Batch API mode only as an optional economy workflow after synchronous behaviour is stable; it remains unnecessary.
 
 #### Deployment
 
-- [ ] Add a minimal production container only if the chosen host needs it.
-- [ ] Document Codespaces development and Linux deployment.
-- [ ] Document secrets, storage, writable paths, health checks, backup, and upgrade steps.
-- [ ] Add a user guide for CMS Generator, Image Downloader, Registry, Review, and Job History.
-- [ ] Add a release checklist and rollback procedure.
+- [x] Do not add a production container before a host requires it.
+- [x] Document Codespaces development and Linux deployment.
+- [x] Document secrets, storage, writable paths, health checks, backup, and upgrade steps.
+- [x] Add a user guide for CMS Generator, Image Downloader, Registry, Review, and Job History.
+- [x] Add a release checklist and rollback procedure.
 
 #### Final review
 
-- [ ] Run correctness review before Ponytail/minimalism review.
-- [ ] Remove genuinely unused code and dependencies.
-- [ ] Do not remove security, evidence, validation, audit, or recovery behaviour.
-- [ ] Freeze versioned prompts, schema, registry, and golden evaluation results for release.
+- [x] Run correctness review before Ponytail/minimalism review.
+- [x] Remove genuinely unused code and dependencies.
+- [x] Do not remove security, evidence, validation, audit, or recovery behaviour.
+- [x] Freeze versioned prompts, schema, registry, and engineering evaluation results for release.
 
 ### Release acceptance criteria
 
-- [ ] All automated tests and Ruff pass in a clean environment.
-- [ ] Every attribute set completes an end-to-end golden workflow.
-- [ ] Exact output workbooks pass CMS-oriented validation.
-- [ ] Size-only and per-SKU modes have no known silent variant leakage in the golden set.
-- [ ] Image downloader passes SSRF, timeout, malformed-content, transparency, orientation, naming, and ZIP tests.
-- [ ] User can resume a partial job and export successful work.
-- [ ] API cost and request count are visible before and after processing.
-- [ ] Deployment and user documentation are complete.
+- [x] All automated tests and Ruff pass in a clean environment.
+- [x] Every attribute set completes an end-to-end engineering-fixture workflow.
+- [x] Exact output workbooks pass CMS-oriented validation.
+- [x] Size-only and per-SKU modes have no known silent variant leakage in the engineering fixture.
+- [x] Image downloader passes SSRF, timeout, malformed-content, transparency, orientation, naming, and ZIP tests.
+- [x] User can resume a partial job and export successful work.
+- [x] API cost availability and request count are visible before and after processing.
+- [x] Deployment and user documentation are complete.
 - [ ] User signs off on permitted values, title rules, review thresholds, and output format.
 
 ### Verification

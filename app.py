@@ -5,6 +5,13 @@ from pathlib import Path
 import streamlit as st
 
 from fashion_cms.database import InvalidJobEdit, InvalidStateTransition, JobDatabase
+from fashion_cms.evaluation import load_thresholds
+from fashion_cms.config import (
+    ResourceLimits,
+    load_pricing,
+    maximum_job_cost,
+    usage_cost,
+)
 from fashion_cms.catalog_service import (
     build_cms_workbook,
     build_qc_report,
@@ -25,8 +32,8 @@ from fashion_cms.image_downloader import (
     parse_url_workbook,
 )
 from fashion_cms.image_service import open_oriented_image, parse_uploaded_images
-from fashion_cms.jobs import JobService
-from fashion_cms.llm_service import LLMSettings, OpenAIResponsesClient
+from fashion_cms.jobs import JobService, summarize_job_usage
+from fashion_cms.llm_service import LLMError, LLMSettings, OpenAIResponsesClient
 from fashion_cms.models import (
     AnalysisMode,
     JobStatus,
@@ -36,6 +43,7 @@ from fashion_cms.models import (
     WorkItemStatus,
 )
 from fashion_cms.registry import configuration_issues, load_registry, profile_ids
+from fashion_cms.release_gates import load_report
 from fashion_cms.review import (
     ProposalStatus,
     ReviewAction,
@@ -64,6 +72,9 @@ IMAGE_WORKBOOK_DIGEST_STATE = "image_download_workbook_digest"
 CMS_JOB_STATE = "cms_job_id"
 CMS_SOURCE_DIGEST_STATE = "cms_source_digest"
 DEFAULT_DATABASE_PATH = ROOT / "data" / "fashion_cms.sqlite3"
+PRICING_PATH = ROOT / "config" / "model_pricing.json"
+THRESHOLDS_PATH = ROOT / "config" / "evaluation_thresholds.json"
+RELEASE_REPORT_PATH = ROOT / "docs" / "releases" / "0.1.0-rc1" / "release-gates.json"
 registry = load_registry(ROOT / "config" / "attribute_registry.xlsx")
 set_names = {
     row.attribute_set_id: row.attribute_set_name for row in registry.attribute_sets
@@ -214,6 +225,7 @@ def cms_workbook_page() -> None:
     image_result = parse_uploaded_images(
         image_upload_data,
         tuple(row.sku for row in workbook_result.rows),
+        limits=ResourceLimits.from_env(),
     )
     show_issues(workbook_result.issues + image_result.issues)
 
@@ -437,15 +449,36 @@ def show_job_plan(job_id: str, uploaded_images: tuple[UploadedImage, ...] = ()) 
     size_only_count = sum(
         group.analysis_mode == AnalysisMode.BASE_CODE_SIZE_ONLY for group in groups
     )
-    metrics = st.columns(6)
+    limits = ResourceLimits.from_env()
+    pricing = load_pricing(PRICING_PATH)
+    model_pricing = pricing.for_model(job.context.model_identifier)
+    expected_copy_calls = sum(len(group.skus) for group in groups)
+    vision_attempts = len(items) * (limits.model_retries + 1)
+    copy_attempts = expected_copy_calls * 2 * (limits.model_retries + 1)
+    maximum_cost = maximum_job_cost(
+        model_pricing,
+        request_count=vision_attempts + copy_attempts,
+        image_count=sum(len(group.images) for group in groups)
+        * (limits.model_retries + 1),
+    )
+    metrics = st.columns(8)
     metrics[0].metric("Base-code groups", len(groups))
     metrics[1].metric("SKUs", sum(len(group.skus) for group in groups))
     metrics[2].metric("Size-only groups", size_only_count)
     metrics[3].metric("Per-SKU groups", len(groups) - size_only_count)
     metrics[4].metric("Planned vision requests", len(items))
     metrics[5].metric("Cached / required", f"{len(cached_keys)} / {len(items) - len(cached_keys)}")
+    metrics[6].metric("Expected text calls (max)", expected_copy_calls)
+    metrics[7].metric(
+        "Estimated maximum cost",
+        f"{model_pricing.currency} {maximum_cost:.4f}"
+        if maximum_cost is not None and model_pricing is not None
+        else "Unavailable",
+    )
     st.caption(
-        "This exact stored plan is checked again before extraction; cache hits make no API call."
+        f"Model: {job.context.model_identifier} · configured concurrency: "
+        f"{limits.model_concurrency} · hard call limit: {limits.calls_per_job}. "
+        "The exact stored plan is checked again before extraction; cache hits make no API call."
     )
     st.dataframe(
         [
@@ -498,7 +531,8 @@ def _attribute_controls(
         return
     attribute_set_name = set_names[job.attribute_set]
     fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
-    retry_failed = job.status in {JobStatus.PARTIAL_FAILURE, JobStatus.FAILED}
+    stored_items = database.list_work_items(job_id)
+    retry_failed = any(item.status == WorkItemStatus.FAILED for item in stored_items)
     action = f"Retry failed {attribute_set_name} items" if retry_failed else (
         f"Resume {attribute_set_name} extraction"
         if job.status == JobStatus.RUNNING
@@ -516,6 +550,33 @@ def _attribute_controls(
         and settings.image_detail == job.context.image_detail
     ))
     confirmed = True
+    limits = ResourceLimits.from_env()
+    pricing = load_pricing(PRICING_PATH)
+    model_pricing = pricing.for_model(job.context.model_identifier)
+    remaining_units = sum(
+        item.status in {WorkItemStatus.PENDING, WorkItemStatus.FAILED}
+        for item in stored_items
+    )
+    remaining_attempts = remaining_units * (limits.model_retries + 1)
+    estimated_cost = maximum_job_cost(
+        model_pricing,
+        request_count=remaining_attempts,
+        image_count=len(uploaded_images) * (limits.model_retries + 1),
+    )
+    calls_blocked = not fake and job.attempted_model_calls >= limits.calls_per_job
+    cost_blocked = not fake and estimated_cost is not None and (
+        limits.maximum_estimated_cost is None
+        or estimated_cost > limits.maximum_estimated_cost
+    )
+    if calls_blocked:
+        st.error(
+            "Live processing is blocked because this job has reached its hard model-call limit."
+        )
+    if cost_blocked:
+        st.error(
+            "Live processing is blocked by the estimated-cost circuit breaker. "
+            "Configure an approved maximum at or above the displayed estimate."
+        )
     if fake:
         st.caption("Offline fake client selected. No network request or API key is used.")
     else:
@@ -530,11 +591,15 @@ def _attribute_controls(
             "I confirm this live OpenAI request and the displayed planned request count.",
             key=f"live_confirm_{job_id}",
         )
+        if estimated_cost is None:
+            st.caption("Cost unavailable: no approved matching pricing configuration.")
+        elif model_pricing is not None:
+            st.caption(f"Estimated maximum: {model_pricing.currency} {estimated_cost:.4f}.")
     if not st.button(
         action,
         type="primary",
         key=f"attribute_run_{job_id}_{job.status.value}",
-        disabled=not configured or not confirmed,
+        disabled=not configured or not confirmed or cost_blocked or calls_blocked,
     ):
         return
 
@@ -550,6 +615,8 @@ def _attribute_controls(
     client = fake_attribute_client() if fake else OpenAIResponsesClient(settings)
     prompt_version, schema_version = _contract_versions(job.attribute_set)
     try:
+        if job.cancel_requested and not retry_failed:
+            database.clear_cancellation(job_id)
         with st.spinner(f"Extracting {attribute_set_name} observations…"):
             run_attribute_job(
                 database,
@@ -598,6 +665,33 @@ def _show_attribute_results(database: JobDatabase, job_id: str) -> None:
     metrics[1].metric("Cached", sum(item.cache_hit for item in items))
     metrics[2].metric("Failed", failures)
     metrics[3].metric("Warnings", warnings)
+    job = database.get_job(job_id)
+    pricing = load_pricing(PRICING_PATH)
+    usage = summarize_job_usage(
+        database, job_id, pricing.for_model(job.context.model_identifier)
+    )
+    st.caption(
+        f"Calls attempted: {usage.attempted_calls} · successful: {usage.successful_calls} · "
+        f"retries: {usage.retries} · failed: {usage.failed_calls} · cache hits: "
+        f"{usage.cache_hits} · usage: {usage.usage or 'unavailable'} · cost: "
+        f"{usage.cost if usage.cost is not None else 'unavailable'}"
+    )
+    st.dataframe(
+        [
+            {
+                "Base-code group": unit.group_key,
+                "SKUs": ", ".join(unit.skus),
+                "Attempted calls": unit.attempted_calls,
+                "Retries": unit.retries,
+                "Cache hit": unit.cache_hit,
+                "Usage": unit.usage,
+                "Cost": unit.cost if unit.cost is not None else "Unavailable",
+            }
+            for unit in usage.units
+        ],
+        hide_index=True,
+        width="stretch",
+    )
 
     observations = []
     messages = []
@@ -661,22 +755,35 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
     job = database.get_job(job_id)
     attribute_set_name = set_names[job.attribute_set]
     items = database.list_work_items(job_id)
-    if not items or any(item.status == WorkItemStatus.FAILED for item in items):
-        if any(item.status == WorkItemStatus.FAILED for item in items):
-            st.warning("Review and export remain blocked until extraction failures are resolved.")
+    if not items:
         return
-    if any(
-        item.status not in {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+    successful_statuses = {WorkItemStatus.COMPLETED, WorkItemStatus.REVIEW_REQUIRED}
+    successful_skus = {
+        sku
         for item in items
-    ):
-        st.info("Review remains blocked until every extraction item finishes.")
+        if item.status in successful_statuses
+        for sku in item.represented_skus
+    }
+    partial = any(item.status not in successful_statuses for item in items)
+    if not successful_skus:
+        st.info("No successful extraction rows are available for review or partial export.")
         return
-    review_items = load_review_items(database, job_id, registry)
+    review_items = tuple(
+        item
+        for item in load_review_items(database, job_id, registry)
+        if item.sku in successful_skus
+    )
     if not review_items:
         return
-    rows = database.load_rows(job_id)
+    all_rows = database.load_rows(job_id)
+    rows = tuple(row for row in all_rows if row.sku in successful_skus)
 
     st.subheader(f"{attribute_set_name} attribute review")
+    if partial:
+        st.warning(
+            f"Partial job: review and export include only {len(rows):,} successful SKU(s). "
+            "The QC workbook lists every failed or incomplete SKU."
+        )
     for warning in model_year_schema_warnings(rows, attribute_set_name):
         st.warning(warning)
     filters = st.multiselect(
@@ -852,6 +959,8 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
     catalog_state = f"catalog_{job_id}_{decision_digest}"
     catalogs = st.session_state.get(catalog_state)
     fake = job.context.model_identifier in {"phase5-fake", "phase7-fake"}
+    limits = ResourceLimits.from_env()
+    pricing = load_pricing(PRICING_PATH)
     live_ready = True
     live_confirmed = True
     live_settings = None
@@ -868,30 +977,63 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
             "I confirm this text-only OpenAI catalog-copy request.",
             key=f"live_catalog_confirm_{job_id}",
         )
+    catalog_model = (
+        "phase6-fake"
+        if fake
+        else (live_settings.model if live_settings and live_settings.model else "")
+    )
+    catalog_attempts = len(rows) * 2 * (limits.model_retries + 1)
+    catalog_estimate = maximum_job_cost(
+        pricing.for_model(catalog_model),
+        request_count=catalog_attempts,
+        image_count=0,
+    )
+    catalog_calls_blocked = not fake and job.attempted_model_calls >= limits.calls_per_job
+    catalog_cost_blocked = not fake and catalog_estimate is not None and (
+        limits.maximum_estimated_cost is None
+        or catalog_estimate > limits.maximum_estimated_cost
+    )
+    if not fake:
+        st.caption(
+            "Maximum planned catalog-copy attempts: "
+            f"{catalog_attempts:,} · estimated cost: "
+            f"{catalog_estimate if catalog_estimate is not None else 'unavailable'}."
+        )
+    if catalog_calls_blocked or catalog_cost_blocked:
+        st.error("Catalog copy is blocked by the configured call or cost circuit breaker.")
     if catalogs is None and st.button(
         "Generate factual catalog copy",
         type="primary",
         key=f"generate_catalog_{job_id}_{decision_digest}",
-        disabled=not live_ready or not live_confirmed,
+        disabled=(
+            not live_ready
+            or not live_confirmed
+            or catalog_calls_blocked
+            or catalog_cost_blocked
+        ),
     ):
         client = fake_catalog_client()
         try:
-            if fake:
-                model = "phase6-fake"
-            else:
+            if not fake:
                 assert live_settings is not None
                 client = OpenAIResponsesClient(live_settings)
-                model = live_settings.model or job.context.model_identifier
+
+            def consume_catalog_call() -> None:
+                if not database.claim_model_call(job_id, limits.calls_per_job):
+                    raise LLMError("The configured job call circuit breaker was reached.")
+
             catalogs = generate_catalog_batch(
                 rows,
                 facts,
                 registry,
                 client,
-                model=model,
+                model=catalog_model,
                 keyword_separator=os.environ.get("FASHION_CMS_KEYWORD_SEPARATOR", ", "),
                 groups=database.load_groups(job_id),
                 attribute_set=job.attribute_set,
                 product_profile=job.product_profile,
+                max_retries=limits.model_retries,
+                before_attempt=None if fake else consume_catalog_call,
             )
         except Exception as exc:
             st.error(f"Catalog copy could not be accepted: {exc}")
@@ -905,6 +1047,33 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
     if catalogs is None:
         st.info("Review is complete. Generate catalog copy to enable final downloads.")
         return
+
+    catalog_contents = {
+        (
+            catalog.content.request_id,
+            catalog.content.model,
+            catalog.content.keywords,
+            catalog.content.bullets,
+        ): catalog.content
+        for catalog in catalogs.values()
+    }.values()
+    catalog_usage: dict[str, int] = {}
+    catalog_cost = 0
+    cost_available = True
+    for content in catalog_contents:
+        for name, value in content.usage.items():
+            catalog_usage[name] = catalog_usage.get(name, 0) + value
+        content_cost = usage_cost(pricing.for_model(content.model), content.usage)
+        if content_cost is None:
+            cost_available = False
+        else:
+            catalog_cost += content_cost
+    st.caption(
+        f"Catalog calls attempted: {sum(content.request_count for content in catalog_contents)} · "
+        f"retries: {sum(content.retry_count for content in catalog_contents)} · usage: "
+        f"{catalog_usage or 'unavailable'} · cost: "
+        f"{catalog_cost if cost_available else 'unavailable'}"
+    )
 
     st.subheader(f"Accepted {attribute_set_name} titles and catalog copy")
     st.dataframe(
@@ -940,6 +1109,12 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
             attribute_set=job.attribute_set,
             product_profile=job.product_profile,
             configuration_warnings=configuration_issues(registry, job.attribute_set),
+            incomplete_rows=tuple(
+                (sku, item.status.value, item.error or "Incomplete")
+                for item in items
+                if item.status not in successful_statuses
+                for sku in item.represented_skus
+            ),
         )
     except Exception as exc:
         st.error(str(exc))
@@ -949,27 +1124,35 @@ def _show_attribute_review(database: JobDatabase, job_id: str) -> None:
     artifact_root.mkdir(parents=True, exist_ok=True)
     existing = {(artifact.kind, artifact.path) for artifact in database.list_artifacts(job_id)}
     for kind, filename, content in (
-        ("CMS_WORKBOOK", f"{job_id}_{job.attribute_set}_cms.xlsx", cms),
-        ("QC_REPORT", f"{job_id}_{job.attribute_set}_qc.xlsx", qc),
+        (
+            "CMS_WORKBOOK_PARTIAL" if partial else "CMS_WORKBOOK",
+            f"{job_id}_{job.attribute_set}_{'partial_' if partial else ''}cms.xlsx",
+            cms,
+        ),
+        (
+            "QC_REPORT_PARTIAL" if partial else "QC_REPORT",
+            f"{job_id}_{job.attribute_set}_{'partial_' if partial else ''}qc.xlsx",
+            qc,
+        ),
     ):
         path = artifact_root / filename
         path.write_bytes(content)
         relative = str(path.relative_to(ROOT))
         if (kind, relative) not in existing:
             database.add_artifact(job_id, kind, relative)
-    if job.status == JobStatus.REVIEW_REQUIRED:
+    if not partial and job.status == JobStatus.REVIEW_REQUIRED:
         database.transition_job(job_id, JobStatus.COMPLETED)
     downloads = st.columns(2)
     downloads[0].download_button(
         f"Download CMS-ready {attribute_set_name} workbook",
         data=cms,
-        file_name=f"{job.attribute_set}_cms_upload.xlsx",
+        file_name=f"{job.attribute_set}_{'partial_' if partial else ''}cms_upload.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     downloads[1].download_button(
         f"Download separate {attribute_set_name} QC report",
         data=qc,
-        file_name=f"{job.attribute_set}_qc_report.xlsx",
+        file_name=f"{job.attribute_set}_{'partial_' if partial else ''}qc_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -1144,6 +1327,20 @@ def attribute_registry_page() -> None:
         hide_index=True,
         width="stretch",
     )
+    st.subheader("Configuration health")
+    try:
+        limits = ResourceLimits.from_env()
+    except (TypeError, ValueError) as exc:
+        st.error(f"Resource-limit configuration is invalid: {exc}")
+    else:
+        st.dataframe(limits.health_rows(), hide_index=True, width="stretch")
+    pricing = load_pricing(PRICING_PATH)
+    thresholds = load_thresholds(THRESHOLDS_PATH)
+    st.caption(
+        f"Pricing configuration {pricing.version}: {pricing.approval_status}. "
+        f"{len(pricing.models)} configured model(s). Evaluation thresholds "
+        f"{thresholds.version}: {thresholds.approval_status.value}."
+    )
     selected_set = st.selectbox(
         "Inspect attribute set",
         tuple(registry.mappings_by_set),
@@ -1205,6 +1402,8 @@ def job_history_page() -> None:
                 "Failed items": job.failed_item_count,
                 "Review required": job.review_required_count,
                 "Planned requests": job.planned_request_count,
+                "Attempted model calls": job.attempted_model_calls,
+                "Cancellation requested": job.cancel_requested,
             }
             for job in jobs
         ],
@@ -1235,6 +1434,17 @@ def job_history_page() -> None:
         f"{cache_hits:,} work item(s) reused deterministic cached results. "
         "Successful items are never repeated by failure-only retry."
     )
+    if job.cancel_requested:
+        st.warning(
+            "Cancellation requested: no new work will be scheduled. An already-sent "
+            "provider request may finish; completed results are preserved and pending units "
+            "remain resumable."
+        )
+    elif job.status in {JobStatus.READY, JobStatus.RUNNING} and st.button(
+        "Request cancellation", key=f"cancel_{selected_id}"
+    ):
+        service.request_cancellation(selected_id)
+        st.rerun()
 
     st.subheader("Selected analysis modes")
     st.dataframe(
@@ -1312,6 +1522,38 @@ def job_history_page() -> None:
             )
 
 
+def release_readiness_page() -> None:
+    st.title("Release Readiness")
+    st.write("Centralized release gates for the current verified release candidate.")
+    try:
+        report = load_report(RELEASE_REPORT_PATH)
+    except Exception:
+        st.error("The release-gate artifact is missing or invalid.")
+        return
+    if report.production_ready:
+        st.success("All mandatory release gates pass; user acceptance may proceed.")
+    else:
+        st.warning(f"Production release is blocked. Current verdict: {report.verdict}.")
+    st.caption(
+        f"{report.application} {report.version} · generated {report.generated_at.isoformat()}"
+    )
+    st.dataframe(
+        [
+            {
+                "Gate": result.gate_id,
+                "Description": result.description,
+                "Status": result.status.value,
+                "Evidence": result.evidence,
+                "Artifact": result.artifact_path or "",
+                "Blocker / failure": result.reason or "",
+            }
+            for result in report.results
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+
+
 st.set_page_config(page_title="Fashion CMS Upload Generator", layout="wide")
 page = st.navigation(
     [
@@ -1319,6 +1561,7 @@ page = st.navigation(
         st.Page(image_downloader_page, title="Image Downloader"),
         st.Page(attribute_registry_page, title="Attribute Registry"),
         st.Page(job_history_page, title="Job History"),
+        st.Page(release_readiness_page, title="Release Readiness"),
     ]
 )
 page.run()

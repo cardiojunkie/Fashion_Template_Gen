@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from io import BytesIO
 from pathlib import PurePosixPath
+import stat
 from zipfile import BadZipFile, ZipFile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from pydantic import ValidationError
 
+from fashion_cms.config import ResourceLimits
 from fashion_cms.models import (
     MAX_EXCEL_CELL_CHARACTERS,
     InputRow,
@@ -51,24 +53,27 @@ def _issue(
     return ValidationIssue(severity=severity, code=code, message=message, location=location)
 
 
-def preflight_xlsx(content: bytes) -> ValidationIssue | None:
+def preflight_xlsx(
+    content: bytes, limits: ResourceLimits | None = None
+) -> ValidationIssue | None:
+    settings = limits or ResourceLimits.from_env()
     try:
         with ZipFile(BytesIO(content)) as archive:
             members = archive.infolist()
     except (BadZipFile, OSError) as exc:
         return _issue(Severity.CRITICAL, "MALFORMED_WORKBOOK", f"Cannot open workbook: {exc}")
 
-    if len(members) > MAX_WORKBOOK_MEMBERS:
+    if len(members) > settings.workbook_members:
         return _issue(
             Severity.CRITICAL,
             "WORKBOOK_TOO_COMPLEX",
-            f"Workbook contains more than {MAX_WORKBOOK_MEMBERS:,} internal files.",
+            f"Workbook contains more than {settings.workbook_members:,} internal files.",
         )
-    if sum(member.file_size for member in members) > MAX_WORKBOOK_UNCOMPRESSED_BYTES:
+    if sum(member.file_size for member in members) > settings.workbook_expanded_bytes:
         return _issue(
             Severity.CRITICAL,
             "WORKBOOK_TOO_LARGE",
-            f"Workbook expands beyond {MAX_WORKBOOK_UNCOMPRESSED_BYTES // 1024 // 1024} MB.",
+            f"Workbook expands beyond {settings.workbook_expanded_bytes // 1024 // 1024} MB.",
         )
     for member in members:
         path = PurePosixPath(member.filename.replace("\\", "/"))
@@ -84,11 +89,24 @@ def preflight_xlsx(content: bytes) -> ValidationIssue | None:
                 "ENCRYPTED_WORKBOOK",
                 "Encrypted workbooks are not supported.",
             )
+        if stat.S_ISLNK(member.external_attr >> 16):
+            return _issue(
+                Severity.CRITICAL,
+                "UNSAFE_WORKBOOK",
+                "Workbook symbolic links are not supported.",
+            )
         if path.name.casefold() == "vbaproject.bin":
             return _issue(
                 Severity.CRITICAL,
                 "MACRO_WORKBOOK",
                 "Macro-enabled workbook content is not supported.",
+            )
+        normalized = "/".join(part.casefold() for part in path.parts)
+        if normalized.startswith("xl/externallinks/") or normalized == "xl/connections.xml":
+            return _issue(
+                Severity.CRITICAL,
+                "EXTERNAL_WORKBOOK_CONTENT",
+                "Workbook external links and data connections are not supported.",
             )
     return None
 
@@ -118,6 +136,7 @@ def _duplicate_issue(
 
 def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> WorkbookResult:
     issues: list[ValidationIssue] = []
+    limits = ResourceLimits.from_env()
     if PurePosixPath(filename).suffix.casefold() != ".xlsx":
         return WorkbookResult(
             issues=(
@@ -132,17 +151,17 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
         return WorkbookResult(
             issues=(_issue(Severity.CRITICAL, "EMPTY_WORKBOOK", "The workbook is empty."),)
         )
-    if len(content) > MAX_WORKBOOK_BYTES:
+    if len(content) > limits.workbook_bytes:
         return WorkbookResult(
             issues=(
                 _issue(
                     Severity.CRITICAL,
                     "WORKBOOK_TOO_LARGE",
-                    f"Workbook exceeds {MAX_WORKBOOK_BYTES // 1024 // 1024} MB.",
+                    f"Workbook exceeds {limits.workbook_bytes // 1024 // 1024} MB.",
                 ),
             )
         )
-    if preflight_issue := preflight_xlsx(content):
+    if preflight_issue := preflight_xlsx(content, limits):
         return WorkbookResult(issues=(preflight_issue,))
 
     try:
@@ -178,13 +197,13 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
                     ),
                 )
             )
-        if len(header_cells) > MAX_WORKBOOK_COLUMNS:
+        if len(header_cells) > limits.workbook_columns:
             return WorkbookResult(
                 issues=(
                     _issue(
                         Severity.CRITICAL,
                         "WORKSHEET_TOO_LARGE",
-                        f"First worksheet must not exceed {MAX_WORKBOOK_COLUMNS:,} columns.",
+                        f"First worksheet must not exceed {limits.workbook_columns:,} columns.",
                         worksheet.title,
                     ),
                 )
@@ -242,22 +261,22 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
                 row_issues_omitted = True
 
         for row_number, cells in enumerate(cells_by_row, start=2):
-            if row_number > MAX_WORKBOOK_ROWS:
+            if row_number > limits.workbook_rows:
                 issues.append(
                     _issue(
                         Severity.CRITICAL,
                         "WORKSHEET_TOO_LARGE",
-                        f"First worksheet must not exceed {MAX_WORKBOOK_ROWS:,} rows.",
+                        f"First worksheet must not exceed {limits.workbook_rows:,} rows.",
                         worksheet.title,
                     )
                 )
                 break
-            if len(cells) > MAX_WORKBOOK_COLUMNS:
+            if len(cells) > limits.workbook_columns:
                 issues.append(
                     _issue(
                         Severity.CRITICAL,
                         "WORKSHEET_TOO_LARGE",
-                        f"First worksheet must not exceed {MAX_WORKBOOK_COLUMNS:,} columns.",
+                        f"First worksheet must not exceed {limits.workbook_columns:,} columns.",
                         f"{worksheet.title}!{row_number}",
                     )
                 )
@@ -306,6 +325,24 @@ def parse_input_workbook(content: bytes, filename: str = "input.xlsx") -> Workbo
                 header: cell.value if cell is not None else None
                 for header, cell in required_cells.items()
             }
+            oversized_fields = [
+                header
+                for header, value in values.items()
+                if isinstance(value, str) and len(value) > limits.cell_characters
+            ]
+            if oversized_fields:
+                for field in oversized_fields:
+                    column = get_column_letter(column_indexes[field] + 1)
+                    add_row_issue(
+                        _issue(
+                            Severity.CRITICAL,
+                            "INVALID_CELL",
+                            f"{field}: exceeds the configured {limits.cell_characters:,} "
+                            "character limit.",
+                            f"{worksheet.title}!{column}{row_number}",
+                        )
+                    )
+                continue
             try:
                 row = InputRow.model_validate({"row_number": row_number, **values})
             except ValidationError as exc:

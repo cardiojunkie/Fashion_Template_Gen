@@ -1,0 +1,12 @@
+{
+  "manifest_version": "1",
+  "release_candidate": "0.1.0-rc1",
+  "application_version": "0.1.0",
+  "prompt_versions": ["topwear-extraction-v1", "attribute-extraction-v1", "topwear-catalog-copy-v1"],
+  "schema_versions": ["topwear-structured-output-v1", "attribute-structured-output-v1", "topwear-catalog-copy-schema-v1", "database-v5"],
+  "registry": {"version":"9ed268029dc95dafeb9afd3638b2b059727187e8242dbdcdcfbfe5de34c24811","sha256":"9ed268029dc95dafeb9afd3638b2b059727187e8242dbdcdcfbfe5de34c24811"},
+  "golden_dataset": {"version":"phase8-engineering-v1","fingerprint":"a72cda94b7a8ed827332a202aa5008aa046b3c64aa1a069a52a343df2848bf10","sha256":"fa563df2a7d8bfb5519ddcf0ba0a4efebf716972ade663bdc4b9835d440aaa04"},
+  "model_pricing": {"version":"1","approval_status":"PENDING","sha256":"a8c9575512acdf245f29a0c51dc324ca3d4872bd207de337820e865695385166"},
+  "evaluation_thresholds": {"version":"1","approval_status":"PENDING","sha256":"a426e96afb09b364ab1553c17bc2c6bf7d8ea58cfa1af606533ef3aaf50380bd"},
+  "implementation_hashes": {"extraction":"a9ad58b3f18a77406c7a204de9bdaf1be7ef230afbe9d44fdf59db49feea5e43","catalog":"353a5bd48d7a5d33faf355aab0ca4e733ec701d203ecfb2c338885543d9e19c4","evaluation":"2b91a9b4b9f885a9c9f04dcbe85868c631e3cc4894ac7fc2f64ae55d13e40dfd"}
+}

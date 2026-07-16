@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import stat
 import warnings
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
@@ -12,6 +12,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from fashion_cms.config import ResourceLimits
 from fashion_cms.models import ImageResult, Severity, UploadedImage, ValidationIssue
 
 
@@ -19,6 +20,7 @@ SUPPORTED_SUFFIXES = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "
 IMAGE_NAME = re.compile(r"(.+)-([0-9]+)")
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 50_000_000
+MAX_IMAGE_DIMENSION = 20_000
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 1_000
 MAX_IMAGE_FILES = 500
@@ -101,13 +103,19 @@ def _expand_archive(
     issues: list[ValidationIssue],
     remaining_files: int,
     remaining_bytes: int,
+    limits: ResourceLimits | None,
 ) -> list[tuple[str, str, bytes]]:
-    if len(content) > MAX_ARCHIVE_BYTES:
+    archive_bytes = limits.zip_bytes if limits else MAX_ARCHIVE_BYTES
+    archive_members = limits.zip_members if limits else MAX_ARCHIVE_MEMBERS
+    expanded_limit = limits.zip_expanded_bytes if limits else MAX_UNCOMPRESSED_BYTES
+    image_bytes = limits.image_bytes if limits else MAX_IMAGE_BYTES
+    image_files = limits.uploaded_image_count if limits else MAX_IMAGE_FILES
+    if len(content) > archive_bytes:
         issues.append(
             _issue(
                 Severity.CRITICAL,
                 "ARCHIVE_TOO_LARGE",
-                f"ZIP exceeds {MAX_ARCHIVE_BYTES // 1024 // 1024} MB.",
+                f"ZIP exceeds {archive_bytes // 1024 // 1024} MB.",
                 archive_name,
             )
         )
@@ -128,22 +136,22 @@ def _expand_archive(
     expanded: list[tuple[str, str, bytes]] = []
     try:
         members = archive.infolist()
-        if len(members) > MAX_ARCHIVE_MEMBERS:
+        if len(members) > archive_members:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "ARCHIVE_TOO_MANY_MEMBERS",
-                    f"ZIP contains more than {MAX_ARCHIVE_MEMBERS:,} entries.",
+                    f"ZIP contains more than {archive_members:,} entries.",
                     archive_name,
                 )
             )
             return []
-        if sum(member.file_size for member in members) > MAX_UNCOMPRESSED_BYTES:
+        if sum(member.file_size for member in members) > expanded_limit:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "ARCHIVE_EXPANDS_TOO_LARGE",
-                    f"ZIP expands beyond {MAX_UNCOMPRESSED_BYTES // 1024 // 1024} MB.",
+                    f"ZIP expands beyond {expanded_limit // 1024 // 1024} MB.",
                     archive_name,
                 )
             )
@@ -162,6 +170,16 @@ def _expand_archive(
             if path is None or member.is_dir() or _is_hidden(path):
                 continue
             location = f"{archive_name}!{member.filename[:120]}"
+            if path.suffix.casefold() == ".zip":
+                issues.append(
+                    _issue(
+                        Severity.CRITICAL,
+                        "NESTED_ARCHIVE",
+                        "ZIP files inside uploaded ZIPs are not supported.",
+                        location,
+                    )
+                )
+                continue
             if stat.S_ISLNK(member.external_attr >> 16):
                 issues.append(
                     _issue(
@@ -184,12 +202,33 @@ def _expand_archive(
                 continue
             readable_members.append((member, path, location))
 
+        collisions = {
+            name
+            for name, count in Counter(
+                path.name.casefold() for _, path, _ in readable_members
+            ).items()
+            if count > 1
+        }
+        if collisions:
+            issues.append(
+                _issue(
+                    Severity.CRITICAL,
+                    "ARCHIVE_FILENAME_COLLISION",
+                    "ZIP contains duplicate or colliding extracted filenames: "
+                    + ", ".join(sorted(collisions)[:5]),
+                    archive_name,
+                )
+            )
+            readable_members = [
+                item for item in readable_members if item[1].name.casefold() not in collisions
+            ]
+
         if len(readable_members) > remaining_files:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "TOO_MANY_IMAGES",
-                    f"Uploads contain more than {MAX_IMAGE_FILES:,} files.",
+                    f"Uploads contain more than {image_files:,} files.",
                     archive_name,
                 )
             )
@@ -199,26 +238,26 @@ def _expand_archive(
                 _issue(
                     Severity.CRITICAL,
                     "UPLOAD_EXPANDS_TOO_LARGE",
-                    f"Uploads expand beyond {MAX_UNCOMPRESSED_BYTES // 1024 // 1024} MB.",
+                    f"Uploads expand beyond {expanded_limit // 1024 // 1024} MB.",
                     archive_name,
                 )
             )
             return []
 
         for member, path, location in readable_members:
-            if member.file_size > MAX_IMAGE_BYTES:
+            if member.file_size > image_bytes:
                 issues.append(
                     _issue(
                         Severity.CRITICAL,
                         "IMAGE_TOO_LARGE",
-                        f"File exceeds {MAX_IMAGE_BYTES // 1024 // 1024} MB.",
+                        f"File exceeds {image_bytes // 1024 // 1024} MB.",
                         location,
                     )
                 )
                 continue
             try:
                 with archive.open(member) as stream:
-                    data = stream.read(MAX_IMAGE_BYTES + 1)
+                    data = stream.read(image_bytes + 1)
             except (BadZipFile, NotImplementedError, OSError, RuntimeError) as exc:
                 issues.append(
                     _issue(
@@ -229,12 +268,12 @@ def _expand_archive(
                     )
                 )
                 continue
-            if len(data) > MAX_IMAGE_BYTES:
+            if len(data) > image_bytes:
                 issues.append(
                     _issue(
                         Severity.CRITICAL,
                         "IMAGE_TOO_LARGE",
-                        f"File expands beyond {MAX_IMAGE_BYTES // 1024 // 1024} MB.",
+                        f"File expands beyond {image_bytes // 1024 // 1024} MB.",
                         location,
                     )
                 )
@@ -246,14 +285,20 @@ def _expand_archive(
 
 
 def _expand_uploads(
-    uploads: tuple[tuple[str, bytes], ...], issues: list[ValidationIssue]
+    uploads: tuple[tuple[str, bytes], ...],
+    issues: list[ValidationIssue],
+    limits: ResourceLimits | None,
 ) -> list[tuple[str, str, bytes]]:
-    if len(uploads) > MAX_IMAGE_FILES:
+    image_files = limits.uploaded_image_count if limits else MAX_IMAGE_FILES
+    total_upload_bytes = limits.total_upload_bytes if limits else MAX_TOTAL_UPLOAD_BYTES
+    expanded_limit = limits.zip_expanded_bytes if limits else MAX_UNCOMPRESSED_BYTES
+    image_bytes = limits.image_bytes if limits else MAX_IMAGE_BYTES
+    if len(uploads) > image_files:
         issues.append(
             _issue(
                 Severity.CRITICAL,
                 "TOO_MANY_UPLOADS",
-                f"Upload no more than {MAX_IMAGE_FILES:,} files or ZIPs at once.",
+                f"Upload no more than {image_files:,} files or ZIPs at once.",
             )
         )
         return []
@@ -268,12 +313,12 @@ def _expand_uploads(
             )
         )
         return []
-    if sum(len(content) for _, content in uploads) > MAX_TOTAL_UPLOAD_BYTES:
+    if sum(len(content) for _, content in uploads) > total_upload_bytes:
         issues.append(
             _issue(
                 Severity.CRITICAL,
                 "UPLOAD_TOO_LARGE",
-                f"Uploads exceed {MAX_TOTAL_UPLOAD_BYTES // 1024 // 1024} MB in total.",
+                f"Uploads exceed {total_upload_bytes // 1024 // 1024} MB in total.",
             )
         )
         return []
@@ -292,37 +337,38 @@ def _expand_uploads(
                 path.name,
                 content,
                 issues,
-                MAX_IMAGE_FILES - len(files),
-                MAX_UNCOMPRESSED_BYTES - expanded_bytes,
+                image_files - len(files),
+                expanded_limit - expanded_bytes,
+                limits,
             )
             files.extend(expanded)
             expanded_bytes += sum(len(data) for _, _, data in expanded)
             continue
-        if len(content) > MAX_IMAGE_BYTES:
+        if len(content) > image_bytes:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "IMAGE_TOO_LARGE",
-                    f"File exceeds {MAX_IMAGE_BYTES // 1024 // 1024} MB.",
+                    f"File exceeds {image_bytes // 1024 // 1024} MB.",
                     path.name,
                 )
             )
             continue
-        if len(files) >= MAX_IMAGE_FILES:
+        if len(files) >= image_files:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "TOO_MANY_IMAGES",
-                    f"Uploads contain more than {MAX_IMAGE_FILES:,} files.",
+                    f"Uploads contain more than {image_files:,} files.",
                 )
             )
             return []
-        if expanded_bytes + len(content) > MAX_UNCOMPRESSED_BYTES:
+        if expanded_bytes + len(content) > expanded_limit:
             issues.append(
                 _issue(
                     Severity.CRITICAL,
                     "UPLOAD_EXPANDS_TOO_LARGE",
-                    f"Uploads exceed {MAX_UNCOMPRESSED_BYTES // 1024 // 1024} MB.",
+                    f"Uploads exceed {expanded_limit // 1024 // 1024} MB.",
                 )
             )
             return []
@@ -336,6 +382,7 @@ def _open_validated_image(
     *,
     max_pixels: int,
     expected_format: str | None = None,
+    max_dimension: int = MAX_IMAGE_DIMENSION,
 ) -> tuple[Image.Image, str]:
     try:
         with warnings.catch_warnings():
@@ -357,6 +404,21 @@ def _open_validated_image(
                         "IMAGE_TOO_MANY_PIXELS",
                         f"Image exceeds {max_pixels:,} decoded pixels.",
                     )
+                if max(probe.size) > max_dimension:
+                    raise _ImageDecodeError(
+                        "IMAGE_DIMENSIONS_TOO_LARGE",
+                        f"Image width and height must not exceed {max_dimension:,} pixels.",
+                    )
+                if getattr(probe, "n_frames", 1) != 1 or getattr(probe, "is_animated", False):
+                    raise _ImageDecodeError(
+                        "MULTIFRAME_IMAGE",
+                        "Animated and multipage images are not supported.",
+                    )
+                if probe.mode not in {"1", "L", "LA", "P", "RGB", "RGBA", "CMYK"}:
+                    raise _ImageDecodeError(
+                        "UNSUPPORTED_IMAGE_MODE",
+                        f"Image color mode {probe.mode!r} is not supported.",
+                    )
                 probe.verify()
             with Image.open(BytesIO(content)) as image:
                 with ImageOps.exif_transpose(image) as oriented:
@@ -376,15 +438,21 @@ def _open_validated_image(
 
 
 def _decode_image(
-    source_name: str, filename: str, sku: str, ordinal: int, content: bytes
+    source_name: str,
+    filename: str,
+    sku: str,
+    ordinal: int,
+    content: bytes,
+    limits: ResourceLimits | None,
 ) -> tuple[UploadedImage | None, ValidationIssue | None]:
     suffix = PurePosixPath(filename).suffix.casefold()
     expected_format = SUPPORTED_SUFFIXES[suffix]
     try:
         oriented, _ = _open_validated_image(
             content,
-            max_pixels=MAX_IMAGE_PIXELS,
+            max_pixels=limits.image_pixels if limits else MAX_IMAGE_PIXELS,
             expected_format=expected_format,
+            max_dimension=limits.image_dimension if limits else MAX_IMAGE_DIMENSION,
         )
     except _ImageDecodeError as exc:
         return None, _issue(Severity.CRITICAL, exc.code, str(exc), source_name)
@@ -408,10 +476,13 @@ def _decode_image(
 
 
 def parse_uploaded_images(
-    uploads: tuple[tuple[str, bytes], ...], skus: tuple[str, ...]
+    uploads: tuple[tuple[str, bytes], ...],
+    skus: tuple[str, ...],
+    *,
+    limits: ResourceLimits | None = None,
 ) -> ImageResult:
     issues: list[ValidationIssue] = _IssueList()
-    files = _expand_uploads(tuple(uploads), issues)
+    files = _expand_uploads(tuple(uploads), issues, limits)
     sku_order = {sku: position for position, sku in enumerate(dict.fromkeys(skus))}
     parsed: dict[tuple[str, int], list[tuple[str, str, bytes]]] = defaultdict(list)
 
@@ -482,7 +553,9 @@ def parse_uploaded_images(
             )
             continue
         source_name, filename, content = candidates[0]
-        image, image_issue = _decode_image(source_name, filename, sku, ordinal, content)
+        image, image_issue = _decode_image(
+            source_name, filename, sku, ordinal, content, limits
+        )
         if image_issue:
             issues.append(image_issue)
         elif image:
@@ -530,6 +603,7 @@ def standardize_pad_white(
     upscale: bool = False,
     quality: int = 95,
     max_pixels: int | None = None,
+    max_dimension: int = MAX_IMAGE_DIMENSION,
 ) -> StandardizedImage:
     """Orient and fit a supported image onto a centered white RGB JPEG canvas."""
     if not isinstance(content, bytes):
@@ -549,7 +623,9 @@ def standardize_pad_white(
         raise ValueError("max_pixels must be a positive integer.")
 
     try:
-        source, _ = _open_validated_image(content, max_pixels=pixel_limit)
+        source, _ = _open_validated_image(
+            content, max_pixels=pixel_limit, max_dimension=max_dimension
+        )
     except _ImageDecodeError as exc:
         raise ValueError(str(exc)) from exc
 

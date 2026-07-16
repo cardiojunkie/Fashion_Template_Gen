@@ -9,6 +9,8 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from io import BytesIO
 from pathlib import PurePosixPath
 from urllib.parse import urljoin, urlsplit
@@ -18,12 +20,8 @@ import httpx
 from openpyxl import Workbook, load_workbook
 from pydantic import ValidationError
 
-from fashion_cms.excel_service import (
-    MAX_WORKBOOK_BYTES,
-    MAX_WORKBOOK_COLUMNS,
-    MAX_WORKBOOK_ROWS,
-    preflight_xlsx,
-)
+from fashion_cms.config import ResourceLimits
+from fashion_cms.excel_service import preflight_xlsx
 from fashion_cms.image_service import MAX_IMAGE_FILES, standardize_pad_white
 from fashion_cms.models import (
     DownloadedImage,
@@ -86,6 +84,10 @@ class DownloadSettings:
     max_response_bytes: int = 25 * MIB
     max_decoded_pixels: int = 50_000_000
     max_total_output_bytes: int = MAX_TOTAL_OUTPUT_BYTES
+    max_redirects: int = MAX_REDIRECTS
+    total_deadline_seconds: float = 120.0
+    max_urls: int = MAX_URLS
+    max_image_dimension: int = 20_000
 
     def __post_init__(self) -> None:
         limits = (
@@ -95,6 +97,9 @@ class DownloadSettings:
             ("max_response_bytes", self.max_response_bytes, 1, 100 * MIB),
             ("max_decoded_pixels", self.max_decoded_pixels, 1, 100_000_000),
             ("max_total_output_bytes", self.max_total_output_bytes, 1, 1024 * MIB),
+            ("max_redirects", self.max_redirects, 0, 20),
+            ("max_urls", self.max_urls, 1, 10_000),
+            ("max_image_dimension", self.max_image_dimension, 1, 65_535),
         )
         for name, value, minimum, maximum in limits:
             if (
@@ -109,10 +114,17 @@ class DownloadSettings:
         ):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 300:
                 raise ValueError(f"{name} must be greater than 0 and at most 300.")
+        if (
+            isinstance(self.total_deadline_seconds, bool)
+            or not isinstance(self.total_deadline_seconds, (int, float))
+            or not 0 < self.total_deadline_seconds <= 900
+        ):
+            raise ValueError("total_deadline_seconds must be greater than 0 and at most 900.")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> DownloadSettings:
         values = os.environ if environ is None else environ
+        resources = ResourceLimits.from_env(values)
 
         def integer(name: str, default: int) -> int:
             raw = values.get(name)
@@ -135,13 +147,28 @@ class DownloadSettings:
         return cls(
             total_concurrency=integer("FASHION_CMS_IMAGE_TOTAL_CONCURRENCY", 8),
             per_host_concurrency=integer("FASHION_CMS_IMAGE_PER_HOST_CONCURRENCY", 4),
-            connect_timeout_seconds=number("FASHION_CMS_IMAGE_CONNECT_TIMEOUT_SECONDS", 10),
-            read_timeout_seconds=number("FASHION_CMS_IMAGE_READ_TIMEOUT_SECONDS", 30),
-            retry_count=integer("FASHION_CMS_IMAGE_RETRY_COUNT", 3),
-            max_response_bytes=integer("FASHION_CMS_IMAGE_MAX_RESPONSE_BYTES", 25 * MIB),
-            max_decoded_pixels=integer(
-                "FASHION_CMS_IMAGE_MAX_DECODED_PIXELS", 50_000_000
+            connect_timeout_seconds=number(
+                "FASHION_CMS_IMAGE_CONNECT_TIMEOUT_SECONDS",
+                resources.url_connect_timeout_seconds,
             ),
+            read_timeout_seconds=number(
+                "FASHION_CMS_IMAGE_READ_TIMEOUT_SECONDS", resources.url_read_timeout_seconds
+            ),
+            retry_count=integer("FASHION_CMS_IMAGE_RETRY_COUNT", resources.url_retries),
+            max_response_bytes=integer(
+                "FASHION_CMS_IMAGE_MAX_RESPONSE_BYTES", resources.url_response_bytes
+            ),
+            max_decoded_pixels=integer(
+                "FASHION_CMS_IMAGE_MAX_DECODED_PIXELS", resources.image_pixels
+            ),
+            max_redirects=resources.url_redirects,
+            total_deadline_seconds=number(
+                "FASHION_CMS_URL_TOTAL_DEADLINE_SECONDS",
+                resources.url_total_deadline_seconds,
+            ),
+            max_total_output_bytes=resources.zip_expanded_bytes,
+            max_urls=resources.uploaded_image_count,
+            max_image_dimension=resources.image_dimension,
         )
 
 
@@ -152,10 +179,27 @@ class _DownloadFailure(Exception):
         *,
         http_status: int | None = None,
         retryable: bool = False,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.http_status = http_status
         self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def _retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
 
 
 def _issue(
@@ -195,6 +239,9 @@ def _xlsx_safe_text(value: str) -> str:
 
 def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> UrlWorkbookResult:
     issues: list[ValidationIssue] = []
+    resource_limits = ResourceLimits.from_env()
+    urls_per_sku_limit = resource_limits.urls_per_sku
+    url_limit = resource_limits.uploaded_image_count
 
     def add_issue(issue: ValidationIssue) -> None:
         if len(issues) < MAX_REPORT_ISSUES - 1:
@@ -223,17 +270,17 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
         return UrlWorkbookResult(
             issues=(_issue(Severity.CRITICAL, "EMPTY_WORKBOOK", "The workbook is empty."),)
         )
-    if len(content) > MAX_WORKBOOK_BYTES:
+    if len(content) > resource_limits.workbook_bytes:
         return UrlWorkbookResult(
             issues=(
                 _issue(
                     Severity.CRITICAL,
                     "WORKBOOK_TOO_LARGE",
-                    f"Workbook exceeds {MAX_WORKBOOK_BYTES // MIB} MB.",
+                    f"Workbook exceeds {resource_limits.workbook_bytes // MIB} MB.",
                 ),
             )
         )
-    if preflight_issue := preflight_xlsx(content):
+    if preflight_issue := preflight_xlsx(content, resource_limits):
         return UrlWorkbookResult(issues=(preflight_issue,))
 
     try:
@@ -253,6 +300,7 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
 
     requests: list[ImageUrlRequest] = []
     output_keys: set[tuple[str, int]] = set()
+    urls_by_sku: dict[str, int] = {}
     try:
         if not workbook.worksheets:
             add_issue(
@@ -272,12 +320,13 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
                         worksheet.title,
                     )
                 )
-            elif len(headers) > MAX_WORKBOOK_COLUMNS:
+            elif len(headers) > resource_limits.workbook_columns:
                 add_issue(
                     _issue(
                         Severity.CRITICAL,
                         "WORKSHEET_TOO_LARGE",
-                        f"First worksheet must not exceed {MAX_WORKBOOK_COLUMNS:,} columns.",
+                        f"First worksheet must not exceed "
+                        f"{resource_limits.workbook_columns:,} columns.",
                         worksheet.title,
                     )
                 )
@@ -304,22 +353,24 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
                     )
 
                 for row_number, cells in enumerate(rows, start=2):
-                    if row_number > MAX_WORKBOOK_ROWS:
+                    if row_number > resource_limits.workbook_rows:
                         add_issue(
                             _issue(
                                 Severity.CRITICAL,
                                 "WORKSHEET_TOO_LARGE",
-                                f"First worksheet must not exceed {MAX_WORKBOOK_ROWS:,} rows.",
+                                f"First worksheet must not exceed "
+                                f"{resource_limits.workbook_rows:,} rows.",
                                 worksheet.title,
                             )
                         )
                         break
-                    if len(cells) > MAX_WORKBOOK_COLUMNS:
+                    if len(cells) > resource_limits.workbook_columns:
                         add_issue(
                             _issue(
                                 Severity.CRITICAL,
                                 "WORKSHEET_TOO_LARGE",
-                                f"First worksheet must not exceed {MAX_WORKBOOK_COLUMNS:,} "
+                                f"First worksheet must not exceed "
+                                f"{resource_limits.workbook_columns:,} "
                                 "columns.",
                                 f"{worksheet.title}!{row_number}",
                             )
@@ -373,6 +424,16 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
                             )
                         )
                         continue
+                    if len(sku_cell.value) > resource_limits.cell_characters:
+                        add_issue(
+                            _issue(
+                                Severity.CRITICAL,
+                                "INVALID_SKU",
+                                "SKU exceeds the configured cell character limit.",
+                                f"{worksheet.title}!{sku_cell.coordinate}",
+                            )
+                        )
+                        continue
 
                     for ordinal, cell in enumerate(url_cells, start=1):
                         value = cell.value
@@ -394,6 +455,16 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
                                     Severity.CRITICAL,
                                     "INVALID_URL_CELL",
                                     "Image URLs must be stored as text.",
+                                    f"{worksheet.title}!{cell.coordinate}",
+                                )
+                            )
+                            continue
+                        if len(value) > resource_limits.cell_characters:
+                            add_issue(
+                                _issue(
+                                    Severity.CRITICAL,
+                                    "INVALID_URL_CELL",
+                                    "Image URL exceeds the configured cell character limit.",
                                     f"{worksheet.title}!{cell.coordinate}",
                                 )
                             )
@@ -438,18 +509,30 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
                             )
                             continue
                         output_keys.add(output_key)
+                        urls_by_sku[sku] = urls_by_sku.get(sku, 0) + 1
+                        if urls_by_sku[sku] > urls_per_sku_limit:
+                            add_issue(
+                                _issue(
+                                    Severity.CRITICAL,
+                                    "TOO_MANY_URLS_FOR_SKU",
+                                    f"A SKU must not contain more than {urls_per_sku_limit} "
+                                    "image URLs.",
+                                    f"{worksheet.title}!{cell.coordinate}",
+                                )
+                            )
+                            continue
                         requests.append(request)
-                        if len(requests) > MAX_URLS:
+                        if len(requests) > url_limit:
                             add_issue(
                                 _issue(
                                     Severity.CRITICAL,
                                     "TOO_MANY_URLS",
-                                    f"Workbook contains more than {MAX_URLS:,} image URLs.",
+                                    f"Workbook contains more than {url_limit:,} image URLs.",
                                     worksheet.title,
                                 )
                             )
                             break
-                    if len(requests) > MAX_URLS:
+                    if len(requests) > url_limit:
                         break
     except Exception:
         return UrlWorkbookResult(
@@ -464,8 +547,8 @@ def parse_url_workbook(content: bytes, filename: str = "image_urls.xlsx") -> Url
     finally:
         workbook.close()
 
-    if len(requests) > MAX_URLS:
-        requests = requests[:MAX_URLS]
+    if len(requests) > url_limit:
+        requests = requests[:url_limit]
     if not requests:
         add_issue(
             _issue(
@@ -632,11 +715,15 @@ def _fetch_once(
     host_lock: threading.Lock,
     address_offset: int,
     require_peer_address: bool,
+    deadline: float,
+    clock: Callable[[], float],
 ) -> tuple[bytes, int]:
     current_url = request.source_url
     destination = _validated_destination(current_url, resolver)
 
-    for redirect_count in range(MAX_REDIRECTS + 1):
+    for redirect_count in range(settings.max_redirects + 1):
+        if clock() >= deadline:
+            raise _DownloadFailure("Total request deadline was exceeded.")
         host, addresses = destination
         request_url, pinned_headers, expected_address = _pinned_url(
             current_url, host, addresses, address_offset
@@ -645,6 +732,13 @@ def _fetch_once(
             host, host_semaphores, host_lock, settings.per_host_concurrency
         )
         try:
+            remaining = deadline - clock()
+            request_timeout = httpx.Timeout(
+                connect=min(settings.connect_timeout_seconds, remaining),
+                read=min(settings.read_timeout_seconds, remaining),
+                write=min(settings.connect_timeout_seconds, remaining),
+                pool=min(settings.connect_timeout_seconds, remaining),
+            )
             with semaphore, client.stream(
                 "GET",
                 request_url,
@@ -656,6 +750,7 @@ def _fetch_once(
                 extensions={"sni_hostname": host}
                 if request_url.scheme == "https"
                 else None,
+                timeout=request_timeout,
             ) as response:
                 status = response.status_code
                 _validate_connected_peer(
@@ -670,9 +765,9 @@ def _fetch_once(
                             "Redirect response did not include a destination.",
                             http_status=status,
                         )
-                    if redirect_count == MAX_REDIRECTS:
+                    if redirect_count == settings.max_redirects:
                         raise _DownloadFailure(
-                            f"Redirect limit of {MAX_REDIRECTS} was exceeded.",
+                            f"Redirect limit of {settings.max_redirects} was exceeded.",
                             http_status=status,
                         )
                     next_url = urljoin(current_url, location)
@@ -689,6 +784,7 @@ def _fetch_once(
                         f"HTTP {status} response.",
                         http_status=status,
                         retryable=status in RETRYABLE_STATUSES,
+                        retry_after=_retry_after(response.headers.get("retry-after")),
                     )
 
                 content_type = response.headers.get("content-type", "").split(";", 1)[0]
@@ -713,6 +809,10 @@ def _fetch_once(
 
                 body = bytearray()
                 for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                    if clock() >= deadline:
+                        raise _DownloadFailure(
+                            "Total request deadline was exceeded.", http_status=status
+                        )
                     if len(body) + len(chunk) > settings.max_response_bytes:
                         raise _DownloadFailure(
                             f"Response exceeds the {settings.max_response_bytes // MIB} MB limit.",
@@ -746,6 +846,7 @@ def _download_one(
     host_lock: threading.Lock,
     decode_semaphore: threading.BoundedSemaphore,
     require_peer_address: bool,
+    clock: Callable[[], float],
 ) -> tuple[DownloadedImage | None, DownloadReportRow]:
     if not _safe_output_filename(request):
         return None, DownloadReportRow(
@@ -756,7 +857,16 @@ def _download_one(
             error_message="SKU cannot be represented as a safe flat image filename.",
         )
 
+    deadline = clock() + settings.total_deadline_seconds
     for attempt in range(settings.retry_count + 1):
+        if clock() >= deadline:
+            return None, DownloadReportRow(
+                sku=request.sku,
+                ordinal=request.ordinal,
+                source_url=request.source_url,
+                result=DownloadResult.FAILED,
+                error_message="Total request deadline was exceeded.",
+            )
         try:
             content, status = _fetch_once(
                 request,
@@ -767,11 +877,21 @@ def _download_one(
                 host_lock=host_lock,
                 address_offset=attempt,
                 require_peer_address=require_peer_address,
+                deadline=deadline,
+                clock=clock,
             )
         except _DownloadFailure as exc:
             if exc.retryable and attempt < settings.retry_count:
                 base_delay = min(8.0, 0.5 * 2**attempt)
-                sleeper(base_delay * (0.5 + 0.5 * min(max(jitter(), 0.0), 1.0)))
+                delay = (
+                    exc.retry_after
+                    if exc.retry_after is not None
+                    else base_delay * (0.5 + 0.5 * min(max(jitter(), 0.0), 1.0))
+                )
+                remaining = deadline - clock()
+                if remaining <= 0:
+                    continue
+                sleeper(min(delay, remaining))
                 continue
             return None, DownloadReportRow(
                 sku=request.sku,
@@ -788,6 +908,7 @@ def _download_one(
                 standardized = standardize_pad_white(
                     content,
                     max_pixels=settings.max_decoded_pixels,
+                    max_dimension=settings.max_image_dimension,
                 )
         except ValueError as exc:
             return None, DownloadReportRow(
@@ -834,11 +955,14 @@ def download_images(
     sleeper: Callable[[float], None] = time.sleep,
     jitter: Callable[[], float] = random.random,
     previous: ImageDownloadResult | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> ImageDownloadResult:
     configuration = settings or DownloadSettings.from_env()
     request_list = tuple(requests)
-    if len(request_list) > MAX_URLS:
-        raise ValueError(f"No more than {MAX_URLS:,} image URLs may be downloaded at once.")
+    if len(request_list) > configuration.max_urls:
+        raise ValueError(
+            f"No more than {configuration.max_urls:,} image URLs may be downloaded at once."
+        )
     if len({(request.sku, request.ordinal) for request in request_list}) != len(request_list):
         raise ValueError("Each SKU and URL ordinal must be unique.")
 
@@ -914,6 +1038,7 @@ def download_images(
                     host_lock=host_lock,
                     decode_semaphore=decode_semaphore,
                     require_peer_address=not isinstance(transport, httpx.MockTransport),
+                    clock=clock,
                 )
             ] = request
             return True

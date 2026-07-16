@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from fashion_cms.database import JobDatabase, JobRecord, WorkItemRecord
+from fashion_cms.config import ResourceLimits
 from fashion_cms.jobs import JobService
 from fashion_cms.llm_service import (
     FakeLLMClient,
@@ -1352,12 +1353,17 @@ def run_attribute_job(
     *,
     retry_failed: bool = False,
     progress: Callable[[int, int, WorkItemRecord], None] | None = None,
-    max_retries: int = MAX_RETRIES,
+    max_retries: int | None = None,
     sleep: Callable[[float], None] | None = None,
     expected_prompt_version: str = ATTRIBUTE_PROMPT_VERSION,
     expected_schema_version: str = ATTRIBUTE_SCHEMA_VERSION,
     default_profile: str | None = None,
 ) -> JobRecord:
+    limits = ResourceLimits.from_env()
+    configured_retries = limits.model_retries if max_retries is None else max_retries
+    if configured_retries < 0 or configured_retries > limits.model_retries:
+        raise ValueError("Extraction retries exceed the configured model retry limit.")
+
     job = database.get_job(job_id)
     if registry.fingerprint != job.context.registry_version:
         raise ValueError("The attribute registry changed; create a new extraction job.")
@@ -1385,6 +1391,21 @@ def run_attribute_job(
     }
 
     def extract(item: WorkItemRecord) -> Mapping[str, Any]:
+        item_attempts = 0
+
+        def consume_call_budget() -> None:
+            nonlocal item_attempts
+            if not database.claim_model_call(
+                job_id,
+                limits.calls_per_job,
+                item_key=item.key,
+                retry=item_attempts > 0,
+            ):
+                if database.cancellation_requested(job_id):
+                    raise LLMError("Cancellation was requested before the next model call.")
+                raise LLMError("The configured job call circuit breaker was reached.")
+            item_attempts += 1
+
         try:
             request = build_attribute_request(
                 item,
@@ -1397,8 +1418,9 @@ def run_attribute_job(
             response, retry_count = call_with_retry(
                 client,
                 request,
-                max_retries=max_retries,
+                max_retries=configured_retries,
                 **({"sleep": sleep} if sleep is not None else {}),
+                before_attempt=consume_call_budget,
             )
             return validate_attribute_response(
                 response,
@@ -1455,9 +1477,11 @@ def run_attribute_job(
     service = JobService(database)
     if retry_failed:
         return service.retry_failed_items(
-            job_id, extract, result_validator=validate, progress=progress
+            job_id, extract, result_validator=validate, progress=progress, limits=limits
         )
-    return service.run_job(job_id, extract, result_validator=validate, progress=progress)
+    return service.run_job(
+        job_id, extract, result_validator=validate, progress=progress, limits=limits
+    )
 
 
 def run_topwear_job(
@@ -1469,7 +1493,7 @@ def run_topwear_job(
     *,
     retry_failed: bool = False,
     progress: Callable[[int, int, WorkItemRecord], None] | None = None,
-    max_retries: int = MAX_RETRIES,
+    max_retries: int | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> JobRecord:
     if database.get_job(job_id).attribute_set != "topwear":

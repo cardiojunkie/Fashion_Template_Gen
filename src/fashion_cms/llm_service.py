@@ -6,6 +6,8 @@ import re
 import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 import httpx
@@ -84,10 +86,12 @@ class LLMError(RuntimeError):
         message: str,
         *,
         request_metadata: Mapping[str, object] | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.request_metadata = dict(request_metadata or {})
         self.retry_count = 0
+        self.retry_after = retry_after
 
 
 class RetryableLLMError(LLMError):
@@ -109,10 +113,33 @@ class InvalidLLMResponse(LLMError):
 def sanitize_error(error: BaseException | str, secrets: Sequence[str] = ()) -> str:
     message = " ".join(str(error).split())
     message = re.sub(r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: [redacted]", message)
+    message = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}", r"\1 [redacted]", message)
+    message = re.sub(
+        r"(?i)\b(api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+",
+        r"\1=[redacted]",
+        message,
+    )
+    message = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[redacted]", message)
+    message = re.sub(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@", r"\1[redacted]@", message)
     for secret in secrets:
         if secret:
             message = message.replace(secret, "[redacted]")
     return (message or "Request failed.")[:MAX_SAFE_ERROR_CHARACTERS]
+
+
+def _retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
 
 
 def _request_id(value: object) -> str | None:
@@ -178,6 +205,7 @@ class OpenAIResponsesClient:
                     "request_id": response_request_id,
                     "status": "retryable_error",
                 },
+                retry_after=_retry_after(response.headers.get("retry-after")),
             )
         if response.is_error:
             raise LLMError(
@@ -290,15 +318,22 @@ def call_with_retry(
     max_delay: float = 4.0,
     sleep: Callable[[float], None] = time.sleep,
     jitter: Callable[[], float] = random.random,
+    before_attempt: Callable[[], None] | None = None,
 ) -> tuple[LLMResponse, int]:
     for retry_count in range(max_retries + 1):
         try:
+            if before_attempt is not None:
+                before_attempt()
             return client.create(request), retry_count
         except LLMError as exc:
             exc.retry_count = retry_count
             exc.request_metadata["retry_count"] = retry_count
             if not exc.retryable or retry_count == max_retries:
                 raise
-            delay = min(max_delay, base_delay * (2**retry_count)) * (0.5 + jitter())
+            delay = (
+                min(max_delay, exc.retry_after)
+                if exc.retry_after is not None
+                else min(max_delay, base_delay * (2**retry_count)) * (0.5 + jitter())
+            )
             sleep(delay)
     raise AssertionError("unreachable")

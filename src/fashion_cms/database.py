@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sqlite3
+import threading
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -19,7 +22,7 @@ from fashion_cms.variant_service import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 JOB_STATUSES = tuple(status.value for status in JobStatus)
 ITEM_STATUSES = tuple(status.value for status in WorkItemStatus)
 ANALYSIS_MODES = tuple(mode.value for mode in AnalysisMode)
@@ -70,6 +73,9 @@ class JobRecord:
     context: CacheContext
     created_at: str
     updated_at: str
+    cancel_requested: bool
+    last_cancel_requested_at: str | None
+    attempted_model_calls: int
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,8 @@ class WorkItemRecord:
     status: WorkItemStatus
     error: str | None
     retry_count: int
+    attempted_model_calls: int
+    provider_retry_count: int
     cache_key: str
     cache_payload_json: str
     result_ref: str | None
@@ -105,6 +113,8 @@ class JobSummary:
     failed_item_count: int
     review_required_count: int
     planned_request_count: int
+    cancel_requested: bool
+    attempted_model_calls: int
 
 
 @dataclass(frozen=True)
@@ -239,7 +249,20 @@ MIGRATION_3 = (
     )
     """,
 )
-MIGRATIONS = (MIGRATION_1, MIGRATION_2, MIGRATION_3)
+MIGRATION_4 = (
+    "ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0 "
+    "CHECK (cancel_requested IN (0, 1))",
+    "ALTER TABLE jobs ADD COLUMN last_cancel_requested_at TEXT",
+)
+MIGRATION_5 = (
+    "ALTER TABLE jobs ADD COLUMN attempted_model_calls INTEGER NOT NULL DEFAULT 0 "
+    "CHECK (attempted_model_calls >= 0)",
+    "ALTER TABLE work_items ADD COLUMN attempted_model_calls INTEGER NOT NULL DEFAULT 0 "
+    "CHECK (attempted_model_calls >= 0)",
+    "ALTER TABLE work_items ADD COLUMN provider_retry_count INTEGER NOT NULL DEFAULT 0 "
+    "CHECK (provider_retry_count >= 0)",
+)
+MIGRATIONS = (MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5)
 
 
 def _now() -> str:
@@ -253,6 +276,7 @@ def _json(value: object) -> str:
 class JobDatabase:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
+        self._memory_lock = threading.RLock()
         self._memory: sqlite3.Connection | None = None
         if self.path == ":memory:":
             self._memory = self._new_connection()
@@ -264,7 +288,11 @@ class JobDatabase:
             self._migrate(connection)
 
     def _new_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(
+            self.path,
+            timeout=5,
+            check_same_thread=self.path != ":memory:",
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
@@ -272,12 +300,15 @@ class JobDatabase:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = self._memory or self._new_connection()
+        if self._memory is not None:
+            with self._memory_lock:
+                yield self._memory
+            return
+        connection = self._new_connection()
         try:
             yield connection
         finally:
-            if self._memory is None:
-                connection.close()
+            connection.close()
 
     def close(self) -> None:
         if self._memory is not None:
@@ -446,7 +477,84 @@ class JobDatabase:
             ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            cancel_requested=bool(row["cancel_requested"]),
+            last_cancel_requested_at=row["last_cancel_requested_at"],
+            attempted_model_calls=row["attempted_model_calls"],
         )
+
+    def request_cancellation(self, job_id: str) -> JobRecord:
+        now = _now()
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET cancel_requested = 1, last_cancel_requested_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND status IN (?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.READY.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.PARTIAL_FAILURE.value,
+                    JobStatus.FAILED.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                self.get_job(job_id)
+                raise InvalidStateTransition("Only unfinished jobs can request cancellation.")
+        return self.get_job(job_id)
+
+    def clear_cancellation(self, job_id: str) -> None:
+        with self.connection() as connection, connection:
+            connection.execute(
+                "UPDATE jobs SET cancel_requested = 0, updated_at = ? WHERE id = ?",
+                (_now(), job_id),
+            )
+
+    def cancellation_requested(self, job_id: str) -> bool:
+        return self.get_job(job_id).cancel_requested
+
+    def claim_model_call(
+        self,
+        job_id: str,
+        maximum_calls: int,
+        *,
+        item_key: str | None = None,
+        retry: bool = False,
+    ) -> bool:
+        if maximum_calls < 1:
+            raise ValueError("maximum_calls must be positive")
+        now = _now()
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                """
+                UPDATE jobs SET attempted_model_calls = attempted_model_calls + 1,
+                    updated_at = ?
+                WHERE id = ? AND attempted_model_calls < ? AND cancel_requested = 0
+                """,
+                (now, job_id, maximum_calls),
+            )
+            if updated.rowcount != 1:
+                if connection.execute(
+                    "SELECT 1 FROM jobs WHERE id = ?", (job_id,)
+                ).fetchone() is None:
+                    raise JobNotFoundError(job_id)
+                return False
+            if item_key is not None:
+                item = connection.execute(
+                    """
+                    UPDATE work_items
+                    SET attempted_model_calls = attempted_model_calls + 1,
+                        provider_retry_count = provider_retry_count + ?, updated_at = ?
+                    WHERE job_id = ? AND item_key = ? AND status = ?
+                    """,
+                    (int(retry), now, job_id, item_key, WorkItemStatus.RUNNING.value),
+                )
+                if item.rowcount != 1:
+                    raise InvalidJobEdit("Only a running work item can claim a model call.")
+        return True
 
     def transition_job(self, job_id: str, target: JobStatus | str) -> JobRecord:
         target_status = JobStatus(target)
@@ -683,6 +791,8 @@ class JobDatabase:
             status=WorkItemStatus(row["status"]),
             error=row["error"],
             retry_count=row["retry_count"],
+            attempted_model_calls=row["attempted_model_calls"],
+            provider_retry_count=row["provider_retry_count"],
             cache_key=row["cache_key"],
             cache_payload_json=row["cache_payload_json"],
             result_ref=row["result_ref"],
@@ -827,6 +937,23 @@ class JobDatabase:
                 )
             return updated.rowcount
 
+    def fail_pending_items(self, job_id: str, error: str) -> int:
+        with self.connection() as connection, connection:
+            updated = connection.execute(
+                """
+                UPDATE work_items SET status = ?, error = ?, updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (
+                    WorkItemStatus.FAILED.value,
+                    error,
+                    _now(),
+                    job_id,
+                    WorkItemStatus.PENDING.value,
+                ),
+            )
+            return updated.rowcount
+
     def get_cached_result(
         self, cache_key: str, cache_payload_json: str
     ) -> dict[str, object] | None:
@@ -927,6 +1054,8 @@ class JobDatabase:
                 failed_item_count=row["failed"],
                 review_required_count=row["review"],
                 planned_request_count=row["planned"],
+                cancel_requested=bool(row["cancel_requested"]),
+                attempted_model_calls=row["attempted_model_calls"],
             )
             for row in rows
         )
@@ -964,5 +1093,49 @@ class JobDatabase:
             for row in rows
         )
 
+    def backup(self, destination: str | Path) -> Path:
+        if self.path == ":memory:":
+            raise ValueError("An in-memory database cannot be backed up to a durable file.")
+        target = Path(destination).expanduser()
+        if target.exists():
+            raise FileExistsError(f"Backup destination already exists: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with self.connection() as source, sqlite3.connect(temporary) as output:
+                source.backup(output)
+                integrity = output.execute("PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise sqlite3.DatabaseError("Backup integrity check failed")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Fashion CMS SQLite maintenance.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    backup = commands.add_parser("backup", help="Create a consistent SQLite backup.")
+    backup.add_argument("source", type=Path)
+    backup.add_argument("destination", type=Path)
+    migrate = commands.add_parser("migrate", help="Apply pending migrations.")
+    migrate.add_argument("database", type=Path)
+    arguments = parser.parse_args()
+    if arguments.command == "backup" and not arguments.source.is_file():
+        parser.error(f"source database does not exist: {arguments.source}")
+    database = JobDatabase(arguments.source if arguments.command == "backup" else arguments.database)
+    try:
+        if arguments.command == "backup":
+            print(database.backup(arguments.destination))
+        else:
+            print(f"schema_version={database.schema_version}")
+    finally:
+        database.close()
+
 
 Database = JobDatabase
+
+
+if __name__ == "__main__":
+    main()

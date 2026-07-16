@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 
 from openpyxl import Workbook, load_workbook
@@ -186,6 +186,9 @@ class CatalogContent(BaseModel):
     warnings: tuple[str, ...] = ()
     request_id: str | None = None
     model: str
+    request_count: int = Field(default=0, ge=0)
+    retry_count: int = Field(default=0, ge=0)
+    usage: dict[str, int] = Field(default_factory=dict)
     prompt_version: str = CONTENT_PROMPT_VERSION
     schema_version: str = CONTENT_SCHEMA_VERSION
 
@@ -476,6 +479,9 @@ def validate_catalog_output(
     keyword_separator: str = KEYWORD_SEPARATOR,
     request_id: str | None = None,
     model: str = "unknown",
+    request_count: int = 0,
+    retry_count: int = 0,
+    usage: Mapping[str, int] | None = None,
     attribute_set_name: str = "Topwear",
 ) -> CatalogContent:
     errors = []
@@ -595,6 +601,9 @@ def validate_catalog_output(
         warnings=tuple(warnings),
         request_id=request_id,
         model=model,
+        request_count=request_count,
+        retry_count=retry_count,
+        usage=dict(usage or {}),
     )
 
 
@@ -607,9 +616,14 @@ def generate_catalog_content(
     keyword_separator: str = KEYWORD_SEPARATOR,
     attribute_set: str = "topwear",
     product_profile: str | None = None,
+    max_retries: int = 2,
+    before_attempt: Callable[[], None] | None = None,
 ) -> CatalogContent:
     feedback = None
     last_error = "Catalog copy failed validation."
+    request_count = 0
+    retry_count = 0
+    usage: dict[str, int] = {}
     for attempt in range(2):
         request = build_catalog_request(
             accepted,
@@ -619,7 +633,17 @@ def generate_catalog_content(
             attribute_set=attribute_set,
             product_profile=product_profile,
         )
-        response, _ = call_with_retry(client, request)
+        response, retries = call_with_retry(
+            client,
+            request,
+            max_retries=max_retries,
+            before_attempt=before_attempt,
+        )
+        request_count += retries + 1
+        retry_count += retries
+        for name, value in response.usage.items():
+            if isinstance(name, str) and isinstance(value, int) and not isinstance(value, bool):
+                usage[name] = usage.get(name, 0) + value
         if response.status != "completed":
             last_error = "Catalog copy request did not complete."
         else:
@@ -633,6 +657,9 @@ def generate_catalog_content(
                     keyword_separator=keyword_separator,
                     request_id=response.request_id,
                     model=response.model,
+                    request_count=request_count,
+                    retry_count=retry_count,
+                    usage=usage,
                     attribute_set_name=_set_name(registry, attribute_set),
                 )
             except (ValidationError, ContentValidationError) as exc:
@@ -654,6 +681,8 @@ def generate_catalog_batch(
     groups: Sequence[VariantGroup] = (),
     attribute_set: str = "topwear",
     product_profile: str | None = None,
+    max_retries: int = 2,
+    before_attempt: Callable[[], None] | None = None,
 ) -> dict[str, SkuCatalog]:
     shared: dict[tuple[object, ...], CatalogContent] = {}
     group_by_sku = {sku: group for group in groups for sku in group.skus}
@@ -703,6 +732,8 @@ def generate_catalog_batch(
                 keyword_separator=keyword_separator,
                 attribute_set=attribute_set,
                 product_profile=product_profile,
+                max_retries=max_retries,
+                before_attempt=before_attempt,
             )
         result[row.sku] = SkuCatalog(
             sku=row.sku,
@@ -985,6 +1016,7 @@ def build_qc_report(
     attribute_set: str = "topwear",
     product_profile: str | None = None,
     configuration_warnings: Sequence[str] = (),
+    incomplete_rows: Sequence[tuple[str, str, str]] = (),
 ) -> bytes:
     workbook = Workbook()
     worksheet = workbook.active
@@ -1098,6 +1130,19 @@ def build_qc_report(
             "",
         )
         append(values)
+    if incomplete_rows:
+        incomplete = workbook.create_sheet("Incomplete")
+        for column, header in enumerate(("SKU", "Status", "Error"), start=1):
+            cell = incomplete.cell(row=1, column=column, value=header)
+            cell.data_type = "s"
+        for row_number, values in enumerate(incomplete_rows, start=2):
+            for column, value in enumerate(values, start=1):
+                cell = incomplete.cell(
+                    row=row_number,
+                    column=column,
+                    value=sanitize_excel_text(str(value)),
+                )
+                cell.data_type = "s"
     output = BytesIO()
     workbook.save(output)
     workbook.close()

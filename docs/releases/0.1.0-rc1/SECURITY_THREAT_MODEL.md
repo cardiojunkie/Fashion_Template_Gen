@@ -1,0 +1,20 @@
+# Security threat model — 0.1.0-rc1
+
+The browser, uploaded content, filenames, workbook cells, URLs, remote hosts, images, model output, environment configuration, and downloaded artifacts cross trust boundaries. SQLite and approved application data roots are trusted only after validation and must be writable by the application account alone.
+
+| Boundary / threat | Control | Remaining risk |
+|---|---|---|
+| `.xlsx` parser: malformed, macro, formula, external link, decompression/resource abuse | Genuine ZIP-based `.xlsx` preflight; member/expanded/row/column/cell limits; macros, encrypted members, external links, formulas, and error cells rejected; identifiers remain text | Parser-library vulnerabilities still require dependency patching |
+| Image ZIP: traversal, absolute paths, symlinks, nesting, collisions, bombs | In-memory reads only; safe member paths; no extraction; symlink/nested/colliding members rejected; count/size/expanded limits | Large-but-allowed inputs still consume bounded memory |
+| Images: deceptive extension, malformed data, bombs, animation, modes, dimensions | Pillow magic/content verification, extension match, decompression warnings as errors, pixel/dimension limits, single-frame/mode allowlist, EXIF transpose, white RGB output | Infrastructure should also enforce upload/body limits |
+| URL downloader: SSRF, redirects, DNS changes, credentials, timeout, oversized response | HTTP(S) only; userinfo/private/local/non-global rejection; every redirect re-resolved; connection pinned to validated IP and peer checked; deadlines, streamed byte limits, retries, concurrency bounds | Application checks do not replace network egress policy; a proxy/transport that hides peer IP must be rejected, not trusted |
+| Prompt injection in text, filenames, OCR/image text | Untrusted product text is a delimited JSON data block; prompts forbid following embedded instructions, secrets, tools, and unsupported facts; only applicable fields/images are sent | A model can still make mistakes; strict validation and human review remain mandatory |
+| Model response: unknown SKU/header/enum, unsupported evidence, path/SQL/URL control | Strict structured schema plus registry, SKU, evidence, and enum validation; response values never control filesystem, SQL, commands, or downloader URLs | Live model behavior is not approved until golden evaluation |
+| Export: spreadsheet formula injection and internal-data leakage | Untrusted strings are literal/neutralized; CMS sheet has exact headers only; QC is separate and sanitized | Downstream CMS behavior must be acceptance-tested by the user |
+| Secrets/logs/errors | Environment/secrets only; `.env` ignored; redaction covers bearer tokens, named secrets, common key forms, URL credentials; raw requests/images/workbooks are not normally logged | Host/runtime logs and secret-store access remain deployment responsibilities |
+| Jobs/database/artifacts | SQLite constraints/transactions, per-unit persistence, root-scoped artifact downloads, online backup, no image bytes or secrets in DB | Local development has no authentication; filesystem access controls protect all users' jobs |
+| Resource exhaustion/recovery | Central validated limits, bounded pools/retries/runtime/calls/cost, partial failure, cancellation flag, safe resume, dry-run cleanup | Streamlit is single-process; no global cross-process concurrency cap |
+| Cleanup | Approved-root resolution, symlink rejection, active descendant protection, idempotent dry run; durable cleanup disabled without retention approval | Operators must schedule cleanup after retention approval |
+| Deployment exposure | HTTPS, reverse-proxy size/time limits, authentication, private forwarding, monitoring, backups required | Production host and authentication remain unapproved; public deployment is blocked |
+
+Security tests are summarized in `SECURITY_TEST_SUMMARY.md`. Remaining DNS rebinding, host compromise, dependency compromise, and provider-side retention require infrastructure and vendor controls.

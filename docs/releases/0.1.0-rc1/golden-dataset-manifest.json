@@ -1,0 +1,13 @@
+{
+  "manifest_version": "1",
+  "release_candidate": "0.1.0-rc1",
+  "dataset_path": "tests/fixtures/phase8_engineering_dataset.json",
+  "dataset_version": "phase8-engineering-v1",
+  "dataset_kind": "ENGINEERING_FIXTURE",
+  "approval_status": "PENDING",
+  "case_count": 13,
+  "dataset_fingerprint": "a72cda94b7a8ed827332a202aa5008aa046b3c64aa1a069a52a343df2848bf10",
+  "file_sha256": "fa563df2a7d8bfb5519ddcf0ba0a4efebf716972ade663bdc4b9835d440aaa04",
+  "images_committed": false,
+  "image_policy": "External references and SHA-256 placeholders only; no private product images are committed."
+}
